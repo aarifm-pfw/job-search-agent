@@ -203,22 +203,39 @@ class JobScraper:
             return ""
         slug = extract_company_slug(source_url, "workday")
         if not slug:
+            slug = extract_company_slug(job_url, "workday")
+        if not slug:
             return ""
         # Extract job path for Workday API
         parsed = urlparse(job_url)
         job_path = parsed.path
-        # Try multiple wd domains
-        for wd_num in range(1, 6):
-            api_url = f"https://{slug}.wd{wd_num}.myworkdayjobs.com/wday/cxs{job_path}"
+
+        # Strip locale prefix (e.g., /en-US/) — the CXS API doesn't accept it
+        job_path = re.sub(r'^/[a-z]{2}[-_][A-Z]{2}/', '/', job_path)
+
+        # Detect wd domain from the job URL itself (e.g., wd5 from generalmotors.wd5.myworkdayjobs.com)
+        wd_match = re.search(r'\.wd(\d+)\.myworkdayjobs\.com', job_url)
+        wd_nums = [int(wd_match.group(1))] if wd_match else list(range(1, 6))
+
+        for wd_num in wd_nums:
+            api_url = f"https://{slug}.wd{wd_num}.myworkdayjobs.com/wday/cxs/{slug}{job_path}"
             try:
                 resp = self.session.get(api_url, timeout=self.timeout,
                                         headers={"Accept": "application/json"})
                 if resp.status_code == 200:
                     data = resp.json()
-                    desc = data.get("jobPostingInfo", {}).get("jobDescription", "")
-                    if desc:
-                        text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
-                        return text[:5000]
+                    posting_info = data.get("jobPostingInfo", {})
+                    # Combine all description fields — Workday often puts
+                    # visa/legal requirements in additionalInformation or
+                    # qualifications, NOT in the main jobDescription
+                    parts = []
+                    for field in ["jobDescription", "qualifications", "additionalInformation"]:
+                        html = posting_info.get(field, "")
+                        if html:
+                            text = BeautifulSoup(html, "html.parser").get_text(separator=" ", strip=True)
+                            parts.append(text)
+                    if parts:
+                        return " ".join(parts)[:5000]
             except Exception:
                 continue
         return ""

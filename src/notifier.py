@@ -40,6 +40,12 @@ class Notifier:
 
     PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "generic"]
 
+    CATEGORY_ICONS = {
+        "Semiconductor": "\U0001f4a1",  # 💡
+        "Robotics": "\U0001f916",       # 🤖
+    }
+    CATEGORY_ORDER = ["Semiconductor", "Robotics"]  # Listed categories first, then others alphabetically
+
     def __init__(self, config: dict):
         notif_cfg = config.get("notification", {})
         self.method = notif_cfg.get("method", "console")
@@ -60,6 +66,12 @@ class Notifier:
         else:
             return self._send_console(new_jobs, stats)
 
+    def _get_sorted_categories(self, categories):
+        """Return categories in defined order: CATEGORY_ORDER first, then others alphabetically."""
+        ordered = [c for c in self.CATEGORY_ORDER if c in categories]
+        others = sorted(c for c in categories if c not in self.CATEGORY_ORDER)
+        return ordered + others
+
     # ==================== CONSOLE ====================
     def _send_console(self, jobs: List[Dict], stats: Dict) -> bool:
         LINE = "\u2500"  # ─ horizontal line character
@@ -72,32 +84,49 @@ class Notifier:
         print(f"  Found {len(jobs)} NEW matching job(s)")
         print("=" * 120)
 
-        # Group jobs by platform
-        grouped = defaultdict(list)
+        # Build 3-level grouping: category → platform → company
+        hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         for job in jobs:
-            grouped[job.get("platform", "generic")].append(job)
+            cat = job.get("category", "Other")
+            plat = job.get("platform", "generic")
+            company = job.get("company", "Unknown")
+            hierarchy[cat][plat][company].append(job)
 
-        # Display each platform group as a table
-        for platform in self.PLATFORM_ORDER:
-            pjobs = grouped.get(platform)
-            if not pjobs:
-                continue
-            icon, label = self.PLATFORM_LABELS.get(platform, ("\U0001f310", platform.title()))
-            print(f"\n  {icon} {label.upper()} ({len(pjobs)} job{'s' if len(pjobs) != 1 else ''})")
-            print(f"  {LINE*116}")
-            print(f"  {'No.':<5} {'Job ID':<16} {'Title':<36} {'Company':<18} {'Location':<16} {'Score':<6} {'Visa':<6} {'Link'}")
-            print(f"  {LINE*116}")
-            for i, job in enumerate(pjobs, 1):
-                job_id = (job.get('job_id') or DASH)[:14]
-                title = (job.get('title') or 'N/A')[:34]
-                company = (job.get('company') or 'N/A')[:16]
-                location = (job.get('location') or 'N/A')[:14]
-                score = job.get('relevance_score', 0)
-                visa = WARN if job.get('visa_unverified') else CHECK
-                link = job.get('url', '')[:50] or DASH
-                print(f"  {i:<5} {job_id:<16} {title:<36} {company:<18} {location:<16} {score:<6} {visa:<6} {link}")
+        # Display grouped output
+        for category in self._get_sorted_categories(hierarchy.keys()):
+            platforms = hierarchy[category]
+            cat_total = sum(len(j) for p in platforms.values() for j in p.values())
+            cat_icon = self.CATEGORY_ICONS.get(category, "\U0001f3ed")  # 🏭 default
 
-        print(f"\n  {LINE * 120}")
+            print(f"\n{'='*120}")
+            print(f"  {cat_icon} {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})")
+            print(f"{'='*120}")
+
+            for platform in self.PLATFORM_ORDER:
+                if platform not in platforms:
+                    continue
+                companies = platforms[platform]
+                plat_total = sum(len(j) for j in companies.values())
+                icon, label = self.PLATFORM_LABELS.get(platform, ("\U0001f310", platform.title()))
+
+                print(f"\n    {icon} {label} ({plat_total} job{'s' if plat_total != 1 else ''})")
+                print(f"    {LINE*112}")
+
+                for company_name in sorted(companies.keys()):
+                    cjobs = companies[company_name]
+                    print(f"\n      \U0001f3e2 {company_name} ({len(cjobs)} job{'s' if len(cjobs) != 1 else ''})")
+                    print(f"      {'No.':<5} {'Title':<40} {'Location':<20} {'Score':<6} {'Visa':<6} {'Link'}")
+                    print(f"      {LINE*106}")
+
+                    for i, job in enumerate(cjobs, 1):
+                        title = (job.get('title') or 'N/A')[:38]
+                        location = (job.get('location') or 'N/A')[:18]
+                        score = job.get('relevance_score', 0)
+                        visa = WARN if job.get('visa_unverified') else CHECK
+                        link = job.get('url', '')[:45] or DASH
+                        print(f"      {i:<5} {title:<40} {location:<20} {score:<6} {visa:<6} {link}")
+
+        print(f"\n{'='*120}")
         print(f"  {WARN}  = Visa/sponsorship status unverified (description unavailable)")
         print(f"  {CHECK}  = Description fetched, visa keywords checked")
         print(f"\n  \U0001f4c8 Stats: {stats.get('total_jobs_tracked', 0)} total tracked | "
@@ -133,57 +162,84 @@ class Notifier:
             return False
 
     def _build_email_html(self, jobs: List[Dict], stats: Dict) -> str:
-        # Group jobs by platform
-        grouped = defaultdict(list)
+        CATEGORY_COLORS = {
+            "Semiconductor": "#e74c3c",
+            "Robotics": "#2980b9",
+        }
+
+        # Build 3-level grouping: category -> platform -> company
+        hierarchy = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
         for job in jobs:
-            grouped[job.get("platform", "generic")].append(job)
+            cat = job.get("category", "Other")
+            plat = job.get("platform", "generic")
+            company = job.get("company", "Unknown")
+            hierarchy[cat][plat][company].append(job)
 
-        # Build HTML sections per platform
-        platform_sections = ""
-        for platform in self.PLATFORM_ORDER:
-            pjobs = grouped.get(platform)
-            if not pjobs:
-                continue
-            border_color, label = self.PLATFORM_COLORS.get(platform, ("#7f8c8d", platform.title()))
+        # Build HTML sections
+        all_sections = ""
+        for category in self._get_sorted_categories(hierarchy.keys()):
+            platforms = hierarchy[category]
+            cat_total = sum(len(j) for p in platforms.values() for j in p.values())
+            cat_color = CATEGORY_COLORS.get(category, "#34495e")
 
-            rows = ""
-            for job in pjobs:
-                score = job.get('relevance_score', 0)
-                score_color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
-                visa_icon = '<span style="color:#e74c3c;" title="Visa status unverified">\u26a0\ufe0f</span>' if job.get('visa_unverified') else '<span style="color:#27ae60;" title="Visa keywords checked">\u2705</span>'
-                job_id = job.get('job_id', '') or '\u2014'
-                job_url = job.get('url', '')
-                title_cell = f'<a href="{job_url}" style="color:#2c3e50;text-decoration:none;">{job["title"]}</a>' if job_url else job['title']
+            all_sections += f"""
+            <div style="margin-top:15px;">
+                <div style="background:{cat_color};color:white;padding:12px 15px;font-size:16px;font-weight:bold;border-radius:6px 6px 0 0;">
+                    {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})
+                </div>"""
 
-                rows += f"""
-                <tr>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;font-family:monospace;font-size:12px;color:#7f8c8d;">{job_id}</td>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;"><strong>{title_cell}</strong></td>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#7f8c8d;">{job['company']}</td>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;color:#7f8c8d;">{job.get('location', 'N/A')}</td>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;">
-                        <span style="background:{score_color};color:white;padding:2px 7px;border-radius:10px;font-size:12px;">{score}</span>
-                    </td>
-                    <td style="padding:6px 8px;border-bottom:1px solid #eee;text-align:center;">{visa_icon}</td>
-                </tr>"""
+            for platform in self.PLATFORM_ORDER:
+                if platform not in platforms:
+                    continue
+                companies = platforms[platform]
+                plat_total = sum(len(j) for j in companies.values())
+                border_color, label = self.PLATFORM_COLORS.get(platform, ("#7f8c8d", platform.title()))
 
-            platform_sections += f"""
-            <div style="margin-top:10px;">
-                <div style="background:{border_color};color:white;padding:8px 15px;font-size:14px;font-weight:bold;border-radius:4px 4px 0 0;">
-                    {label} ({len(pjobs)} job{'s' if len(pjobs) != 1 else ''})
-                </div>
-                <table style="width:100%;border-collapse:collapse;background:white;">
-                    <tr style="background:#f8f9fa;">
-                        <th style="padding:6px 8px;text-align:left;font-size:12px;width:100px;">Job ID</th>
-                        <th style="padding:6px 8px;text-align:left;font-size:12px;">Title</th>
-                        <th style="padding:6px 8px;text-align:left;font-size:12px;">Company</th>
-                        <th style="padding:6px 8px;text-align:left;font-size:12px;">Location</th>
-                        <th style="padding:6px 8px;text-align:center;font-size:12px;width:50px;">Score</th>
-                        <th style="padding:6px 8px;text-align:center;font-size:12px;width:40px;">Visa</th>
-                    </tr>
-                    {rows}
-                </table>
-            </div>"""
+                all_sections += f"""
+                <div style="margin:5px 0 0 15px;">
+                    <div style="background:{border_color};color:white;padding:6px 12px;font-size:13px;font-weight:bold;border-radius:3px 3px 0 0;">
+                        {label} ({plat_total} job{'s' if plat_total != 1 else ''})
+                    </div>"""
+
+                for company_name in sorted(companies.keys()):
+                    cjobs = companies[company_name]
+
+                    rows = ""
+                    for job in cjobs:
+                        score = job.get('relevance_score', 0)
+                        score_color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
+                        visa_icon = '<span style="color:#e74c3c;" title="Visa status unverified">\u26a0\ufe0f</span>' if job.get('visa_unverified') else '<span style="color:#27ae60;" title="Visa keywords checked">\u2705</span>'
+                        job_url = job.get('url', '')
+                        title_cell = f'<a href="{job_url}" style="color:#2c3e50;text-decoration:none;">{job["title"]}</a>' if job_url else job['title']
+
+                        rows += f"""
+                        <tr>
+                            <td style="padding:5px 8px;border-bottom:1px solid #eee;"><strong>{title_cell}</strong></td>
+                            <td style="padding:5px 8px;border-bottom:1px solid #eee;color:#7f8c8d;">{job.get('location', 'N/A')}</td>
+                            <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:center;">
+                                <span style="background:{score_color};color:white;padding:2px 7px;border-radius:10px;font-size:12px;">{score}</span>
+                            </td>
+                            <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:center;">{visa_icon}</td>
+                        </tr>"""
+
+                    all_sections += f"""
+                    <div style="margin:3px 0 8px 10px;">
+                        <div style="padding:5px 10px;font-size:13px;font-weight:bold;color:#2c3e50;background:#ecf0f1;border-left:3px solid {border_color};">
+                            {company_name} ({len(cjobs)} job{'s' if len(cjobs) != 1 else ''})
+                        </div>
+                        <table style="width:100%;border-collapse:collapse;background:white;">
+                            <tr style="background:#f8f9fa;">
+                                <th style="padding:5px 8px;text-align:left;font-size:11px;">Title</th>
+                                <th style="padding:5px 8px;text-align:left;font-size:11px;">Location</th>
+                                <th style="padding:5px 8px;text-align:center;font-size:11px;width:45px;">Score</th>
+                                <th style="padding:5px 8px;text-align:center;font-size:11px;width:35px;">Visa</th>
+                            </tr>
+                            {rows}
+                        </table>
+                    </div>"""
+
+                all_sections += "</div>"  # close platform
+            all_sections += "</div>"  # close category
 
         return f"""
         <div style="font-family:Arial,sans-serif;max-width:800px;margin:0 auto;">
@@ -191,7 +247,7 @@ class Notifier:
                 <h2 style="margin:0;">\U0001f916 Job Search Agent</h2>
                 <p style="margin:5px 0 0;opacity:0.8;">{len(jobs)} new matching job(s) found \u2014 {datetime.now().strftime('%B %d, %Y')}</p>
             </div>
-            {platform_sections}
+            {all_sections}
             <div style="background:#f0f0f0;padding:10px 15px;font-size:11px;color:#7f8c8d;margin-top:5px;">
                 \u26a0\ufe0f = Visa/sponsorship status unverified &nbsp;|&nbsp; \u2705 = Description fetched, visa keywords checked
             </div>
@@ -199,6 +255,7 @@ class Notifier:
                 \U0001f4ca {stats.get('total_jobs_tracked',0)} jobs tracked across {stats.get('unique_companies',0)} companies
             </div>
         </div>"""
+
 
     # ==================== TELEGRAM ====================
     def _send_telegram(self, jobs: List[Dict], stats: Dict) -> bool:

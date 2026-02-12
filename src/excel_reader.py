@@ -14,6 +14,7 @@ def load_companies_from_excel(file_path: str) -> List[Dict]:
     Read companies from an Excel file.
     Expects columns: Company Name, Career Portal Link (or similar).
     Auto-detects column names.
+    Category is extracted from the filename (e.g., 'Semiconductor_Companies_Careers.xlsx' → 'Semiconductor').
     """
     try:
         import openpyxl
@@ -26,6 +27,12 @@ def load_companies_from_excel(file_path: str) -> List[Dict]:
     if not path.exists():
         logger.error(f"File not found: {file_path}")
         return []
+
+    # Extract category from filename (first word before '_')
+    stem = path.stem  # e.g., "Semiconductor_Companies_Careers_Updated"
+    category = stem.split("_")[0].strip()
+    if not category:
+        category = "Other"
 
     wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     ws = wb.active
@@ -70,12 +77,12 @@ def load_companies_from_excel(file_path: str) -> List[Dict]:
             url = ""
 
         if name and url:
-            companies.append({"name": name, "career_url": url})
+            companies.append({"name": name, "career_url": url, "category": category})
         elif name:
             logger.warning(f"No career URL for: {name}")
 
     wb.close()
-    logger.info(f"Loaded {len(companies)} companies from {file_path}")
+    logger.info(f"Loaded {len(companies)} companies from {file_path} (category: {category})")
     return companies
 
 

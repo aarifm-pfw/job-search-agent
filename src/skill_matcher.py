@@ -416,10 +416,12 @@ class SkillMatcher:
             return False, 0.0, []
 
         # --- EXPERIENCE CHECK ---
-        years_match = re.search(r'(\d+)\+?\s*years?', searchable)
-        if years_match:
-            required_years = int(years_match.group(1))
-            if required_years > self.max_years:
+        # Find ALL "X+ years" mentions and reject if ANY exceed max_years
+        # (re.search only returns the first match, which may be a smaller number)
+        years_matches = re.findall(r'(\d+)\+?\s*years?', searchable)
+        if years_matches:
+            max_required = max(int(y) for y in years_matches)
+            if max_required > self.max_years:
                 return False, 0.0, []
 
         # --- FINAL SCORE ---

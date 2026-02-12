@@ -38,6 +38,11 @@ def setup_logging(verbose: bool = False):
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    # Suppress noisy third-party loggers unless --verbose
+    if not verbose:
+        logging.getLogger("urllib3").setLevel(logging.WARNING)
+        logging.getLogger("requests").setLevel(logging.WARNING)
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
 
 
 def load_config(config_path: str) -> dict:
@@ -120,19 +125,23 @@ def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
     # ---- 3. SCRAPE ALL COMPANIES ----
     all_jobs = []
     errors = 0
+    total = len(companies)
     for i, company in enumerate(companies, 1):
         name = company["name"]
         url = company["career_url"]
-        logger.info(f"[{i}/{len(companies)}] Scraping: {name}")
+        category = company.get("category", "Other")
         try:
             jobs = scraper.scrape_company(name, url)
-            logger.info(f"  → Found {len(jobs)} job(s)")
+            # Propagate category to each job
+            for job in jobs:
+                job["category"] = category
+            logger.info(f"[{i}/{total}] {name} — {len(jobs)} job(s)")
             all_jobs.extend(jobs)
         except Exception as e:
-            logger.error(f"  ✗ Error scraping {name}: {e}")
+            logger.error(f"[{i}/{total}] {name} — ERROR: {e}")
             errors += 1
 
-    logger.info(f"\n📊 Scraping complete: {len(all_jobs)} total jobs from {len(companies)} companies ({errors} errors)")
+    logger.info(f"\nScraping complete: {len(all_jobs)} total jobs from {total} companies ({errors} errors)")
 
     # ---- 4. FIRST PASS: Match skills on titles ----
     matched_jobs = matcher.filter_jobs(all_jobs)
@@ -140,12 +149,14 @@ def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
 
     # ---- 5. SECOND PASS: Fetch descriptions for matched jobs & re-score ----
     if matched_jobs and config.get("scraping", {}).get("fetch_descriptions", True):
-        logger.info(f"📄 Second pass: fetching descriptions for {len(matched_jobs)} matched jobs...")
+        total_desc = len(matched_jobs)
+        logger.info(f"Fetching descriptions for {total_desc} matched jobs...")
         desc_fetched = 0
         desc_failed = 0
+        desc_skipped = 0
         for i, job in enumerate(matched_jobs, 1):
             if job.get("description", "").strip():
-                # Already has description (e.g., from Lever)
+                desc_skipped += 1
                 continue
             try:
                 desc = scraper.fetch_job_description(job)
@@ -155,14 +166,14 @@ def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
                 else:
                     desc_failed += 1
             except Exception as e:
-                logger.debug(f"  Description fetch error: {e}")
+                logger.debug(f"Description fetch error: {e}")
                 desc_failed += 1
 
-            # Progress log every 20 jobs
-            if i % 20 == 0:
-                logger.info(f"  ... {i}/{len(matched_jobs)} descriptions processed")
+            # Progress log every 50 jobs
+            if i % 50 == 0:
+                logger.info(f"  Descriptions: {i}/{total_desc} processed ({desc_fetched} fetched, {desc_failed} failed)")
 
-        logger.info(f"📄 Descriptions: {desc_fetched} fetched, {desc_failed} unavailable")
+        logger.info(f"Descriptions: {desc_fetched} fetched, {desc_skipped} cached, {desc_failed} unavailable")
 
         # Re-run matcher with descriptions to apply exclusion filters & boost scores
         matched_jobs = matcher.filter_jobs(matched_jobs)
