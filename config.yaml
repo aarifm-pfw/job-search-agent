@@ -10,16 +10,21 @@
 skills:
   # Primary skills (high priority - match any ONE of these)
   primary:
-    - "robotics engineer"
-    - "automation engineer"
-    - "software engineer"
+    - "robotics engineer"        
+    - "software engineer"        
+    - "ML engineer"              
+    - "systems engineer"         
+    - "product engineer"         
     - "full stack developer"
-    - "ML engineer"
-    - "machine learning"
-    - "systems engineer"
-    - "software developer"
-    - "Application developer"
-    - "product engineer"
+
+  role_synonyms:
+    - ["systems engineer", "systems software engineer", "embedded systems engineer",
+       "integration engineer", "platform engineer", "infrastructure engineer"]
+    - ["product engineer", "product development engineer", "solutions engineer",
+       "technical product engineer", "applications engineer"]
+    - ["full stack developer", "full-stack developer", "fullstack developer",
+       "full stack engineer", "full-stack engineer", "fullstack engineer",
+       "web developer", "frontend developer"]
 
   # Technical skills (secondary - boost relevance score)
   technical:
@@ -138,6 +143,7 @@ skills:
     - "director"
     - "manager"
     - "staff"
+    - "intern"
     - "VP "
     - "vice president"
     - "head of"
@@ -146,12 +152,15 @@ skills:
     - "12+ years"
     - "10+ years"
     - "7+ years"
+    - "6+ years"
     # Visa/citizenship exclusions (checked in full description)
     - "US citizen"
     - "U.S. citizen"
     - "citizenship required"
     - "security clearance"
     - "clearance required"
+    - "top secret"
+    - "eligible to obtain"
     - "TS/SCI"
     - "no sponsorship"
     - "not sponsor"

@@ -245,20 +245,22 @@ class JobScraper:
         if not slug or not job_id:
             return ""
 
-        # job_id might be a full URL if generic scraper was used
-        actual_id = job_id
-        if '/' in job_id or 'http' in job_id:
-            # Extract ID from URL like "https://jobs.ashbyhq.com/company/job-uuid"
-            parts = job_id.rstrip('/').split('/')
-            actual_id = parts[-1] if parts else job_id
-
-        api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}/posting/{actual_id}"
-        resp = self._request(api_url, accept_json=True)
-        if resp:
-            data = resp.json()
-            desc = data.get("descriptionHtml", "") or data.get("description", "")
-            if desc:
-                return BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)[:2000]
+        # The individual posting API (/posting/{id}) now returns 401.
+        # Fallback: scrape the public job page URL directly.
+        job_page_url = f"https://jobs.ashbyhq.com/{slug}/{job_id}"
+        try:
+            resp = self._request(job_page_url)
+            if resp:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # Ashby job pages render description in a main content area
+                desc_div = soup.find("div", {"class": lambda c: c and "posting-" in c})
+                if not desc_div:
+                    desc_div = soup.find("main") or soup.find("article") or soup.find("body")
+                if desc_div:
+                    text = desc_div.get_text(separator=" ", strip=True)
+                    return text[:2000]
+        except Exception as e:
+            logger.debug(f"  Ashby page scrape failed: {e}")
         return ""
 
     def _fetch_desc_generic(self, job_url: str) -> str:
@@ -541,13 +543,18 @@ class JobScraper:
             data = resp.json()
             jobs = []
             for j in data.get("jobs", []):
+                # The listing API returns descriptionPlain — grab it now
+                # so we don't need a second-pass fetch.
+                desc_text = j.get("descriptionPlain", "") or ""
+                if not desc_text and j.get("descriptionHtml"):
+                    desc_text = BeautifulSoup(j["descriptionHtml"], "html.parser").get_text(separator=" ", strip=True)
                 job = {
                     "title": j.get("title", ""),
                     "job_id": j.get("id", ""),
                     "location": j.get("location", ""),
                     "url": j.get("jobUrl", ""),
                     "department": j.get("departmentName", ""),
-                    "description": "",
+                    "description": desc_text[:2000],
                 }
                 jobs.append(job)
             return jobs

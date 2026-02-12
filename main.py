@@ -166,6 +166,15 @@ def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
         matched_jobs = matcher.filter_jobs(matched_jobs)
         logger.info(f"🎯 Second pass (with descriptions): {len(matched_jobs)} jobs remain after filtering")
 
+        # Flag jobs where description was not fetched (visa filtering may be incomplete)
+        visa_unverified_count = 0
+        for job in matched_jobs:
+            if not job.get("description", "").strip():
+                job["visa_unverified"] = True
+                visa_unverified_count += 1
+        if visa_unverified_count:
+            logger.warning(f"⚠️  {visa_unverified_count} job(s) have unverified visa/sponsorship status (description unavailable)")
+
     # ---- 6. DEDUPLICATE (find new only) ----
     new_jobs = db.filter_new_jobs(matched_jobs)
     logger.info(f"🆕 New jobs (not seen before): {len(new_jobs)}")

@@ -390,6 +390,11 @@ class SkillMatcher:
         # --- LOCATION SCORE ---
         loc_score = self._score_location(job.get("location", ""))
 
+        # If a country filter is set, REJECT jobs outside that country
+        # (loc_score 0 means: not in target country, not remote, not preferred city)
+        if self.country and loc_score == 0:
+            return False, 0.0, []
+
         # --- EXPERIENCE CHECK ---
         years_match = re.search(r'(\d+)\+?\s*years?', searchable)
         if years_match:
