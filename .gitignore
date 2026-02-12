@@ -3,6 +3,9 @@ __pycache__/
 .env
 data/jobs.db
 !data/.gitkeep
+~$*
+preview_email.*
+email_preview.*
 venv/
 .venv/
 *.egg-info/

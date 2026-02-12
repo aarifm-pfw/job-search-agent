@@ -85,6 +85,8 @@ def find_excel_files(data_dir: str = None) -> list:
     files = []
     for p in patterns:
         files.extend(glob.glob(os.path.join(data_dir, p)))
+    # Skip Excel temp/lock files (e.g. ~$Robotics_Companies_Careers.xlsx)
+    files = [f for f in files if not os.path.basename(f).startswith("~$")]
     return sorted(files)
 
 
