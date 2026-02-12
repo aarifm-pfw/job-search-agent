@@ -105,10 +105,13 @@ class Notifier:
     def _send_email(self, jobs: List[Dict], stats: Dict) -> bool:
         email_cfg = self.config.get("email", {})
         try:
+            # Support comma-separated recipient list
+            recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
+
             msg = MIMEMultipart("alternative")
             msg["Subject"] = f"\U0001f916 {len(jobs)} New Job Match{'es' if len(jobs) > 1 else ''} \u2014 {datetime.now().strftime('%b %d')}"
             msg["From"] = email_cfg["sender_email"]
-            msg["To"] = email_cfg["recipient_email"]
+            msg["To"] = ", ".join(recipients)
 
             html = self._build_email_html(jobs, stats)
             msg.attach(MIMEText(html, "html"))
@@ -116,9 +119,9 @@ class Notifier:
             with smtplib.SMTP(email_cfg["smtp_server"], email_cfg["smtp_port"]) as server:
                 server.starttls()
                 server.login(email_cfg["sender_email"], email_cfg["sender_password"])
-                server.sendmail(email_cfg["sender_email"], email_cfg["recipient_email"], msg.as_string())
+                server.sendmail(email_cfg["sender_email"], recipients, msg.as_string())
 
-            logger.info(f"Email sent to {email_cfg['recipient_email']}")
+            logger.info(f"Email sent to {', '.join(recipients)}")
             return True
         except Exception as e:
             logger.error(f"Email failed: {e}")
@@ -355,10 +358,13 @@ class Notifier:
     def _send_weekly_email(self, s: Dict) -> bool:
         email_cfg = self.config.get("email", {})
         try:
+            # Support comma-separated recipient list
+            recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
+
             msg = MIMEMultipart("alternative")
             msg["Subject"] = f"\U0001f4c5 Weekly Job Search Summary \u2014 {s['week_start']} to {s['week_end']}"
             msg["From"] = email_cfg["sender_email"]
-            msg["To"] = email_cfg["recipient_email"]
+            msg["To"] = ", ".join(recipients)
 
             html = self._build_weekly_html(s)
             msg.attach(MIMEText(html, "html"))
@@ -366,9 +372,9 @@ class Notifier:
             with smtplib.SMTP(email_cfg["smtp_server"], email_cfg["smtp_port"]) as server:
                 server.starttls()
                 server.login(email_cfg["sender_email"], email_cfg["sender_password"])
-                server.sendmail(email_cfg["sender_email"], email_cfg["recipient_email"], msg.as_string())
+                server.sendmail(email_cfg["sender_email"], recipients, msg.as_string())
 
-            logger.info("Weekly summary email sent")
+            logger.info(f"Weekly summary email sent to {', '.join(recipients)}")
             return True
         except Exception as e:
             logger.error(f"Weekly email failed: {e}")
