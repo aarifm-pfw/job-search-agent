@@ -1,0 +1,251 @@
+# ============================================================
+#  JOB SEARCH AGENT - CONFIGURATION
+#  Edit this file to customize your job search
+# ============================================================
+
+# --------------- YOUR SKILLS & KEYWORDS ---------------
+# The agent matches job titles and descriptions against these
+# Add/remove keywords as needed
+
+skills:
+  # Primary skills (high priority - match any ONE of these)
+  primary:
+    - "robotics engineer"
+    - "automation engineer"
+    - "software engineer"
+    - "full stack developer"
+    - "ML engineer"
+    - "machine learning"
+    - "systems engineer"
+    - "software developer"
+    - "Application developer"
+    - "product engineer"
+
+  # Technical skills (secondary - boost relevance score)
+  technical:
+    # Programming Languages
+  - "Python"
+  - "Java"
+  - "C++"
+  - "JavaScript"
+  - "TypeScript"
+  
+  # Web Frameworks & Libraries
+  - "Spring Boot"
+  - "React"
+  - "RESTful APIs"
+  
+  # DevOps & Cloud
+  - "Linux"
+  - "Docker"
+  - "Jenkins"
+  - "CI/CD"
+  - "AWS"
+  - "AWS EC2"
+  - "Git"
+  
+  # Databases
+  - "MySQL"
+  - "PostgreSQL"
+  - "MongoDB"
+  - "GraphQL"
+  
+  # AI/ML & Deep Learning
+  - "PyTorch"
+  - "TensorFlow"
+  - "Diffusion Models"
+  - "LLM"
+  - "NLP"
+  - "Reinforcement Learning"
+  - "YOLOv11"
+  - "GPT-3"
+  - "Computer Vision"
+  - "Deep Learning"
+  - "Generative AI"
+  
+  # Robotics & Embedded Systems
+  - "ROS"
+  - "RTOS"
+  - "Kinematics"
+  - "PID Control"
+  - "Motion Planning"
+  - "RRT"
+  - "Trajectory Planning"
+  - "Embedded Systems"
+  - "Sensor Fusion"
+  - "State Machines"
+  - "Finite State Machines"
+  - "Denavit-Hartenberg"
+  - "NodeMCU"
+  - "PLC"
+  - "MIMO"
+  
+  # Security & Authentication
+  - "OAuth2.0"
+  - "RBAC"
+  - "Spring Security"
+  - "JWT"
+  
+  # Testing Frameworks
+  - "Jest"
+  - "JUnit"
+  - "Selenium"
+  - "Mockito"
+  
+  # Workflow & Integration
+  - "Camunda"
+  - "Apache Kafka"
+  - "RabbitMQ"
+  - "WunderGraph"
+  
+  # Engineering Tools
+  - "SolidWorks"
+  - "MATLAB"
+  - "MATLAB Simulink"
+  - "Hardware-in-the-Loop"
+  - "HIL"
+  - "HMI"
+  - "ECU"
+  
+  # Communication Protocols
+  - "SEMI E30"
+  - "SEMI E37"
+  - "HSMS"
+  - "SECS-II"
+  - "SPI"
+  
+  # Software Design & Architecture
+  - "Object-Oriented Design"
+  - "OOD"
+  - "APIs"
+  - "Algorithms"
+  - "Design Patterns"
+  - "Microservices"
+  
+  # Methodologies
+  - "Agile"
+  - "Scrum"
+  
+  # Other Technologies
+  - "IoT"
+  - "Mautic"
+
+  # Negative keywords (EXCLUDE jobs containing these)
+  # These are checked against title + description + department
+  exclude:
+    - "senior staff"
+    - "principal"
+    - "director"
+    - "manager"
+    - "staff"
+    - "VP "
+    - "vice president"
+    - "head of"
+    - "chief"
+    - "15+ years"
+    - "12+ years"
+    - "10+ years"
+    - "7+ years"
+    # Visa/citizenship exclusions (checked in full description)
+    - "US citizen"
+    - "U.S. citizen"
+    - "citizenship required"
+    - "security clearance"
+    - "clearance required"
+    - "TS/SCI"
+    - "no sponsorship"
+    - "not sponsor"
+    - "without sponsorship"
+    - "will not sponsor"
+    - "does not sponsor"
+    - "unable to sponsor"
+    - "not able to sponsor"
+    - "no visa sponsorship"
+    - "permanent resident"
+    - "green card required"
+    - "US persons only"
+    - "ITAR"
+    - "EAR"
+
+  # Custom role synonyms (optional — add your own synonym groups)
+  # Built-in synonyms are already included for common roles
+  # Uncomment and add custom groups if needed:
+  # role_synonyms:
+  #   - ["my custom role", "alternate title 1", "alternate title 2"]
+
+  # Custom tech synonyms (optional)
+  # tech_synonyms:
+  #   - ["my tool", "tool alias 1", "tool alias 2"]
+
+# --------------- EXPERIENCE FILTER ---------------
+experience:
+  min_years: 0
+  max_years: 5
+
+# --------------- LOCATION PREFERENCES ---------------
+locations:
+  # Set to true to include remote jobs
+  include_remote: true
+
+  # Country filter — auto-matches any city/state in this country
+  # Supported: "US" (detects ", CA", ", TX", ", NY" etc.)
+  # Set to "" or remove to disable country-level matching
+  country: "US"
+
+  # Preferred locations — these get BONUS score on top of country match
+  # Country match gives +3, preferred city gives +5
+  preferred:
+    - "San Jose"
+    - "San Francisco"
+    - "Bay Area"
+    - "Mountain View"
+    - "Sunnyvale"
+    - "Santa Clara"
+    - "Palo Alto"
+    - "Remote"
+    - "Hybrid"
+    - "California"
+    - "New York"
+    - "Austin"
+    - "Seattle"
+
+# --------------- NOTIFICATION SETTINGS ---------------
+# Uncomment and configure ONE notification method
+
+notification:
+  # --- Option 1: Email (Gmail) ---
+  method: "email"
+  email:
+    smtp_server: "smtp.gmail.com"
+    smtp_port: 587
+    sender_email: "gaffoorabdul31@gmail.com"
+    sender_password: "pjgz faqb ffir jhyw"    # Use Gmail App Password, NOT your real password
+    recipient_email: "gaffoorabdul31@gmail.com"
+
+  # --- Option 2: Telegram Bot ---
+  # method: "telegram"
+  # telegram:
+  #   bot_token: "YOUR_BOT_TOKEN"
+  #   chat_id: "YOUR_CHAT_ID"
+
+  # --- Option 3: Discord Webhook ---
+  # method: "discord"
+  # discord:
+  #   webhook_url: "https://discord.com/api/webhooks/YOUR_WEBHOOK"
+
+  # --- Option 4: Console only (default) ---
+  method: "console"
+
+# --------------- SCRAPING SETTINGS ---------------
+scraping:
+  # Delay between requests (seconds) - be respectful
+  delay_between_requests: 2
+  # Request timeout (seconds)
+  timeout: 30
+  # Max retries per company
+  max_retries: 2
+  # Fetch full job descriptions for matched jobs (second pass)
+  # Improves visa filtering and skill scoring, adds ~15-25 min runtime
+  fetch_descriptions: true
+  # User agent string
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
