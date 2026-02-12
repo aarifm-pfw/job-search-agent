@@ -62,6 +62,11 @@ class Notifier:
 
     # ==================== CONSOLE ====================
     def _send_console(self, jobs: List[Dict], stats: Dict) -> bool:
+        LINE = "\u2500"  # ─ horizontal line character
+        DASH = "\u2014"  # — em dash
+        WARN = "\u26a0\ufe0f"   # ⚠️
+        CHECK = "\u2705"  # ✅
+
         print("\n" + "=" * 120)
         print(f"  \U0001f916 JOB SEARCH AGENT \u2014 {datetime.now().strftime('%B %d, %Y %I:%M %p')}")
         print(f"  Found {len(jobs)} NEW matching job(s)")
@@ -79,22 +84,22 @@ class Notifier:
                 continue
             icon, label = self.PLATFORM_LABELS.get(platform, ("\U0001f310", platform.title()))
             print(f"\n  {icon} {label.upper()} ({len(pjobs)} job{'s' if len(pjobs) != 1 else ''})")
-            print(f"  {'\u2500'*116}")
+            print(f"  {LINE*116}")
             print(f"  {'No.':<5} {'Job ID':<16} {'Title':<36} {'Company':<18} {'Location':<16} {'Score':<6} {'Visa':<6} {'Link'}")
-            print(f"  {'\u2500'*116}")
+            print(f"  {LINE*116}")
             for i, job in enumerate(pjobs, 1):
-                job_id = (job.get('job_id') or '\u2014')[:14]
+                job_id = (job.get('job_id') or DASH)[:14]
                 title = (job.get('title') or 'N/A')[:34]
                 company = (job.get('company') or 'N/A')[:16]
                 location = (job.get('location') or 'N/A')[:14]
                 score = job.get('relevance_score', 0)
-                visa = '\u26a0\ufe0f' if job.get('visa_unverified') else '\u2705'
-                link = job.get('url', '')[:50] or '\u2014'
+                visa = WARN if job.get('visa_unverified') else CHECK
+                link = job.get('url', '')[:50] or DASH
                 print(f"  {i:<5} {job_id:<16} {title:<36} {company:<18} {location:<16} {score:<6} {visa:<6} {link}")
 
-        print(f"\n  {'\u2500' * 120}")
-        print(f"  \u26a0\ufe0f  = Visa/sponsorship status unverified (description unavailable)")
-        print(f"  \u2705  = Description fetched, visa keywords checked")
+        print(f"\n  {LINE * 120}")
+        print(f"  {WARN}  = Visa/sponsorship status unverified (description unavailable)")
+        print(f"  {CHECK}  = Description fetched, visa keywords checked")
         print(f"\n  \U0001f4c8 Stats: {stats.get('total_jobs_tracked', 0)} total tracked | "
               f"{stats.get('unique_companies', 0)} companies | "
               f"Run #{stats.get('total_runs', 0)}")
