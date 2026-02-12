@@ -1,0 +1,108 @@
+# ============================================================
+#  DAILY JOB SEARCH — GitHub Actions Workflow
+#  Runs twice daily. Database stored in GitHub Releases (no git bloat).
+# ============================================================
+
+name: Daily Job Search
+
+on:
+  # Scheduled run — twice daily (adjust times as needed)
+  # See: https://crontab.guru
+  schedule:
+    - cron: '0 8,20 * * *'       # 8 AM and 8 PM UTC
+
+  # Manual trigger (for testing)
+  workflow_dispatch:
+    inputs:
+      weekly_summary:
+        description: 'Send weekly summary'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write    # Needed for creating/deleting releases
+
+jobs:
+  search-jobs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ---- DOWNLOAD DATABASE FROM GITHUB RELEASES ----
+      - name: Download database from release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data
+          echo "📥 Downloading database from latest release..."
+          gh release download db-latest \
+            --pattern "jobs.db" \
+            --dir data/ \
+            --clobber 2>/dev/null && echo "✅ Database downloaded" \
+            || echo "ℹ️ No existing database found, starting fresh"
+
+      # ---- RUN THE AGENT ----
+      - name: Run Job Search Agent
+        env:
+          # === Uncomment the notification method you want ===
+          # --- For Email (Gmail) ---
+          # SMTP_SERVER: smtp.gmail.com
+          # SMTP_PORT: 587
+          # SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          # SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          # RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          # --- For Telegram ---
+          # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          # TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # --- For Discord ---
+          # DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DUMMY: "placeholder"
+        run: |
+          python main.py --verbose
+
+          # Send weekly summary if manually triggered or if it's Sunday
+          if [ "${{ github.event.inputs.weekly_summary }}" = "true" ] || [ "$(date +%u)" = "7" ]; then
+            echo "📅 Sending weekly summary..."
+            python main.py --weekly-summary --verbose
+          fi
+
+      # ---- UPLOAD DATABASE TO GITHUB RELEASES ----
+      - name: Upload database to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f data/jobs.db ]; then
+            echo "📤 Uploading database to GitHub Release..."
+
+            # Get stats for release notes
+            DB_SIZE=$(du -h data/jobs.db | cut -f1)
+            JOBS_COUNT=$(python3 -c 'import sqlite3; c=sqlite3.connect("data/jobs.db"); print(c.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])' 2>/dev/null || echo "N/A")
+            APPS_COUNT=$(python3 -c 'import sqlite3; c=sqlite3.connect("data/jobs.db"); print(c.execute("SELECT COUNT(*) FROM applications").fetchone()[0])' 2>/dev/null || echo "N/A")
+
+            # Delete old release (ignore error if doesn't exist)
+            gh release delete db-latest --yes --cleanup-tag 2>/dev/null || true
+
+            # Create new release with updated database
+            gh release create db-latest \
+              data/jobs.db \
+              --title "Job Database (auto-updated)" \
+              --notes "Last updated: $(date -u '+%Y-%m-%d %H:%M UTC')
+
+          **Stats:** ${DB_SIZE} | ${JOBS_COUNT} jobs tracked | ${APPS_COUNT} applications
+
+          Download jobs.db and open with [DB Browser for SQLite](https://sqlitebrowser.org/) to browse."
+
+            echo "✅ Database uploaded to Releases"
+          else
+            echo "⚠️ No database file found"
+          fi
