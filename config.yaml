@@ -222,28 +222,30 @@ locations:
 # Uncomment and configure ONE notification method
 
 notification:
-  # --- Option 1: Email (Gmail) ---
-  method: "email"
-  email:
-    smtp_server: "smtp.gmail.com"
-    smtp_port: 587
-    sender_email: "gaffoorabdul31@gmail.com"
-    sender_password: "pjgz faqb ffir jhyw"    # Use Gmail App Password, NOT your real password
-    recipient_email: "gaffoorabdul31@gmail.com"
+  # Default method for local runs. On GitHub Actions, env vars override this.
+  # Options: "console", "email", "telegram", "discord"
+  method: "console"
 
-  # --- Option 2: Telegram Bot ---
+  # --- Email (Gmail) ---
+  # For GitHub Actions: set SENDER_EMAIL, SENDER_PASSWORD, RECIPIENT_EMAIL secrets
+  # For local: uncomment below and fill in, or set environment variables
+  # email:
+  #   smtp_server: "smtp.gmail.com"
+  #   smtp_port: 587
+  #   sender_email: "your-email@gmail.com"
+  #   sender_password: "your-app-password"   # Use Gmail App Password
+  #   recipient_email: "your-email@gmail.com"
+
+  # --- Telegram Bot ---
   # method: "telegram"
   # telegram:
   #   bot_token: "YOUR_BOT_TOKEN"
   #   chat_id: "YOUR_CHAT_ID"
 
-  # --- Option 3: Discord Webhook ---
+  # --- Discord Webhook ---
   # method: "discord"
   # discord:
   #   webhook_url: "https://discord.com/api/webhooks/YOUR_WEBHOOK"
-
-  # --- Option 4: Console only (default) ---
-  method: "console"
 
 # --------------- SCRAPING SETTINGS ---------------
 scraping:

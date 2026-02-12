@@ -54,19 +54,17 @@ jobs:
       # ---- RUN THE AGENT ----
       - name: Run Job Search Agent
         env:
-          # === Uncomment the notification method you want ===
           # --- For Email (Gmail) ---
-          # SMTP_SERVER: smtp.gmail.com
-          # SMTP_PORT: 587
-          # SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
-          # SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
-          # RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
-          # --- For Telegram ---
+          SMTP_SERVER: smtp.gmail.com
+          SMTP_PORT: 587
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          # --- For Telegram (uncomment if using Telegram instead) ---
           # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           # TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # --- For Discord ---
+          # --- For Discord (uncomment if using Discord instead) ---
           # DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DUMMY: "placeholder"
         run: |
           python main.py --verbose
 
