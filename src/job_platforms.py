@@ -40,8 +40,9 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
     """Extract company identifier from career URL."""
     try:
         if platform == "greenhouse":
-            # https://boards.greenhouse.io/company or ?for=company
-            match = re.search(r'greenhouse\.io/(?:embed/job_board\?for=)?(\w+)', url)
+            # https://boards.greenhouse.io/company or https://job-boards.greenhouse.io/company-name
+            # or ?for=company
+            match = re.search(r'greenhouse\.io/(?:embed/job_board\?for=)?([\w-]+)', url)
             if match:
                 return match.group(1)
             parts = urlparse(url).path.strip('/').split('/')
@@ -52,13 +53,14 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
             return parts[0] if parts else None
         elif platform == "workday":
             # https://company.wd1.myworkdayjobs.com/...
-            match = re.search(r'(\w+)\.wd\d+\.myworkdayjobs\.com', url)
+            match = re.search(r'([\w-]+)\.wd\d+\.myworkdayjobs\.com', url)
             return match.group(1) if match else None
         elif platform == "smartrecruiters":
-            match = re.search(r'smartrecruiters\.com/(\w+)', url)
+            match = re.search(r'smartrecruiters\.com/([\w-]+)', url)
             return match.group(1) if match else None
         elif platform == "ashby":
-            match = re.search(r'ashbyhq\.com/(\w+)', url)
+            # https://jobs.ashbyhq.com/company-name
+            match = re.search(r'ashbyhq\.com/([\w-]+)', url)
             return match.group(1) if match else None
     except Exception:
         pass
@@ -158,12 +160,24 @@ class JobScraper:
         slug = extract_company_slug(source_url, "greenhouse")
         if not slug or not job_id:
             return ""
-        api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{job_id}"
+
+        # job_id might be a numeric ID ("4136373008") or a full URL
+        # (happens when generic scraper was used as fallback)
+        numeric_id = job_id
+        if '/' in job_id or 'http' in job_id:
+            # Extract numeric ID from URL like ".../jobs/4136373008"
+            match = re.search(r'/jobs/(\d+)', job_id)
+            if match:
+                numeric_id = match.group(1)
+            else:
+                # Can't extract ID, try fetching the URL directly instead
+                return self._fetch_desc_generic(job_id)
+
+        api_url = f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs/{numeric_id}"
         resp = self._request(api_url, accept_json=True)
         if resp:
             data = resp.json()
             content = data.get("content", "")
-            # Strip HTML tags
             text = BeautifulSoup(content, "html.parser").get_text(separator=" ", strip=True)
             return text[:2000]
         return ""
@@ -230,7 +244,15 @@ class JobScraper:
         slug = extract_company_slug(source_url, "ashby")
         if not slug or not job_id:
             return ""
-        api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}/posting/{job_id}"
+
+        # job_id might be a full URL if generic scraper was used
+        actual_id = job_id
+        if '/' in job_id or 'http' in job_id:
+            # Extract ID from URL like "https://jobs.ashbyhq.com/company/job-uuid"
+            parts = job_id.rstrip('/').split('/')
+            actual_id = parts[-1] if parts else job_id
+
+        api_url = f"https://api.ashbyhq.com/posting-api/job-board/{slug}/posting/{actual_id}"
         resp = self._request(api_url, accept_json=True)
         if resp:
             data = resp.json()
@@ -405,7 +427,7 @@ class JobScraper:
         api_url = f"https://{slug}.{wd_domain}.myworkdayjobs.com/wday/cxs/{slug}/{site_name}/jobs"
         headers = {"Content-Type": "application/json"}
         page_size = 20
-        max_pages = 25  # Safety cap: 25 pages × 20 = 500 jobs max
+        max_pages = 50  # Safety cap: 50 pages × 20 = 1000 jobs max
         all_jobs = []
 
         try:
@@ -421,6 +443,9 @@ class JobScraper:
                 postings = data.get("jobPostings", [])
                 total = data.get("total", 0)
 
+                if not postings:
+                    break  # No more results
+
                 for j in postings:
                     job = {
                         "title": j.get("title", ""),
@@ -432,10 +457,11 @@ class JobScraper:
                     }
                     all_jobs.append(job)
 
-                logger.debug(f"  Workday page {page+1}: got {len(postings)} jobs (total: {total})")
+                logger.debug(f"  Workday page {page+1}: got {len(postings)} jobs (API total: {total})")
 
-                # Stop if we've fetched all jobs or no more results
-                if len(all_jobs) >= total or len(postings) < page_size:
+                # Stop ONLY if we got fewer results than requested (last page)
+                # Do NOT trust 'total' — many Workday sites report incorrect totals
+                if len(postings) < page_size:
                     break
 
                 time.sleep(1)  # Be respectful between pages
