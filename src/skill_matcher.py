@@ -110,6 +110,21 @@ BUILT_IN_TECH_SYNONYMS = [
     {"Azure", "Microsoft Azure"},
 ]
 
+# ================================================================
+#  BUILT-IN EXCLUSION PATTERNS (defense-in-depth)
+#  These regex patterns catch US citizenship / export-control /
+#  security-clearance requirements regardless of user config.
+#  Compiled once at import time for zero per-job overhead.
+# ================================================================
+BUILT_IN_EXCLUDE_PATTERNS = [
+    re.compile(r'\bu\.?s\.?\s*person\b', re.IGNORECASE),
+    re.compile(r'\bexport[- ]control', re.IGNORECASE),
+    re.compile(r'\bmust\s+be\s+a?\s*u\.?s\.?\s*(citizen|person|national)\b', re.IGNORECASE),
+    re.compile(r'\b(ts|top\s*secret)[/ ]sci\b', re.IGNORECASE),
+    re.compile(r'\bobtain\b.*\b(security\s+clearance|clearance)\b', re.IGNORECASE),
+    re.compile(r'\bactive\b.*\bclearance\b', re.IGNORECASE),
+]
+
 
 def _build_synonym_map(synonym_groups: list, configured_keywords: list) -> Dict[str, Set[str]]:
     """
@@ -339,6 +354,11 @@ class SkillMatcher:
             else:
                 if kw in searchable:
                     return False, 0.0, []
+
+        # --- BUILT-IN EXCLUSION PATTERNS (regex, always active) ---
+        for pattern in BUILT_IN_EXCLUDE_PATTERNS:
+            if pattern.search(searchable):
+                return False, 0.0, []
 
         # --- PRIMARY KEYWORD MATCH (with synonyms) ---
         matched = []

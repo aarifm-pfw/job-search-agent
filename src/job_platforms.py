@@ -132,7 +132,8 @@ class JobScraper:
         """
         Second-pass: fetch the full description for a single job.
         Called only for jobs that already matched primary keywords in title.
-        Returns description text (truncated to 2000 chars).
+        Returns description text (truncated to 5000 chars to ensure
+        qualifications/requirements sections are captured for filtering).
         """
         platform = job.get("platform", "")
         job_url = job.get("url", "")
@@ -179,7 +180,7 @@ class JobScraper:
             data = resp.json()
             content = data.get("content", "")
             text = BeautifulSoup(content, "html.parser").get_text(separator=" ", strip=True)
-            return text[:2000]
+            return text[:5000]
         return ""
 
     def _fetch_desc_lever(self, job_url: str) -> str:
@@ -194,7 +195,7 @@ class JobScraper:
             if not content:
                 content = soup.find("div", {"class": re.compile(r"content|description|posting", re.I)})
             if content:
-                return content.get_text(separator=" ", strip=True)[:2000]
+                return content.get_text(separator=" ", strip=True)[:5000]
         return ""
 
     def _fetch_desc_workday(self, job_url: str, source_url: str) -> str:
@@ -217,7 +218,7 @@ class JobScraper:
                     desc = data.get("jobPostingInfo", {}).get("jobDescription", "")
                     if desc:
                         text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
-                        return text[:2000]
+                        return text[:5000]
             except Exception:
                 continue
         return ""
@@ -237,7 +238,7 @@ class JobScraper:
                 text = section.get("text", "")
                 if text:
                     parts.append(BeautifulSoup(text, "html.parser").get_text(separator=" ", strip=True))
-            return " ".join(parts)[:2000]
+            return " ".join(parts)[:5000]
         return ""
 
     def _fetch_desc_ashby(self, job_id: str, source_url: str) -> str:
@@ -258,7 +259,7 @@ class JobScraper:
                     desc_div = soup.find("main") or soup.find("article") or soup.find("body")
                 if desc_div:
                     text = desc_div.get_text(separator=" ", strip=True)
-                    return text[:2000]
+                    return text[:5000]
         except Exception as e:
             logger.debug(f"  Ashby page scrape failed: {e}")
         return ""
@@ -277,12 +278,12 @@ class JobScraper:
             ]:
                 container = soup.find("div", selector)
                 if container and len(container.get_text(strip=True)) > 100:
-                    return container.get_text(separator=" ", strip=True)[:2000]
+                    return container.get_text(separator=" ", strip=True)[:5000]
             # Fallback: grab all paragraph text
             paragraphs = soup.find_all("p")
             text = " ".join(p.get_text(strip=True) for p in paragraphs)
             if len(text) > 100:
-                return text[:2000]
+                return text[:5000]
         return ""
 
     # ========== GREENHOUSE ==========
@@ -554,7 +555,7 @@ class JobScraper:
                     "location": j.get("location", ""),
                     "url": j.get("jobUrl", ""),
                     "department": j.get("departmentName", ""),
-                    "description": desc_text[:2000],
+                    "description": desc_text[:5000],
                 }
                 jobs.append(job)
             return jobs
