@@ -362,7 +362,8 @@ class SkillMatcher:
 
         # --- PRIMARY KEYWORD MATCH (with synonyms) ---
         matched = []
-        primary_score = 0.0
+        title_score = 0.0   # matches in title/department
+        desc_score = 0.0    # matches in description only
 
         for original_kw, variants in self.primary_expanded.items():
             best_match = None
@@ -383,17 +384,20 @@ class SkillMatcher:
                         matched.append(original_kw)
                     else:
                         matched.append(f"{original_kw}→{best_match}")
-                    primary_score += 10.0
+                    title_score += 10.0
                 else:
                     if best_match == original_kw:
                         matched.append(f"{original_kw} (desc)")
                     else:
                         matched.append(f"{original_kw}→{best_match} (desc)")
-                    primary_score += 3.0
+                    desc_score += 3.0
 
-        # Must match at least one primary keyword
-        if primary_score == 0:
+        # Must match at least one primary keyword in TITLE/DEPARTMENT
+        # Description-only matches boost score but cannot qualify a job
+        if title_score == 0:
             return False, 0.0, []
+
+        primary_score = title_score + desc_score
 
         # --- TECHNICAL SKILL BOOST (with synonyms) ---
         tech_score = 0.0
