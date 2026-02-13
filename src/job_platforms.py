@@ -1,6 +1,6 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
-Supports: Greenhouse, Lever, Workday, SmartRecruiters, and generic HTML.
+Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, and generic HTML.
 """
 
 import re
@@ -18,7 +18,9 @@ logger = logging.getLogger(__name__)
 def detect_platform(url: str) -> str:
     """Auto-detect which job platform a career URL uses."""
     url_lower = url.lower()
-    if "greenhouse.io" in url_lower or "boards.greenhouse" in url_lower:
+    if "amazon.jobs" in url_lower:
+        return "amazon"
+    elif "greenhouse.io" in url_lower or "boards.greenhouse" in url_lower:
         return "greenhouse"
     elif "lever.co" in url_lower or "jobs.lever.co" in url_lower:
         return "lever"
@@ -32,6 +34,8 @@ def detect_platform(url: str) -> str:
         return "icims"
     elif "ashbyhq.com" in url_lower:
         return "ashby"
+    elif "recruitee.com" in url_lower:
+        return "recruitee"
     else:
         return "generic"
 
@@ -61,6 +65,15 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
         elif platform == "ashby":
             # https://jobs.ashbyhq.com/company-name
             match = re.search(r'ashbyhq\.com/([\w-]+)', url)
+            return match.group(1) if match else None
+        elif platform == "amazon":
+            # https://amazon.jobs/content/en/teams/ftr/amazon-robotics#search
+            # Extract team slug from the URL path
+            match = re.search(r'/teams?/(?:ftr/)?([\w-]+)', url)
+            return match.group(1) if match else None
+        elif platform == "recruitee":
+            # https://1x.recruitee.com/ → "1x"
+            match = re.search(r'([\w-]+)\.recruitee\.com', url)
             return match.group(1) if match else None
     except Exception:
         pass
@@ -104,7 +117,9 @@ class JobScraper:
         logger.info(f"Scraping {company_name} [{platform}]: {career_url}")
 
         try:
-            if platform == "greenhouse":
+            if platform == "amazon":
+                jobs = self._scrape_amazon(company_name, career_url)
+            elif platform == "greenhouse":
                 jobs = self._scrape_greenhouse(company_name, career_url)
             elif platform == "lever":
                 jobs = self._scrape_lever(company_name, career_url)
@@ -114,6 +129,8 @@ class JobScraper:
                 jobs = self._scrape_smartrecruiters(company_name, career_url)
             elif platform == "ashby":
                 jobs = self._scrape_ashby(company_name, career_url)
+            elif platform == "recruitee":
+                jobs = self._scrape_recruitee(company_name, career_url)
             else:
                 jobs = self._scrape_generic(company_name, career_url)
         except Exception as e:
@@ -141,7 +158,10 @@ class JobScraper:
         source_url = job.get("source_url", "")
 
         try:
-            if platform == "greenhouse":
+            if platform == "amazon":
+                # Amazon API returns full descriptions inline; already stored
+                return self._fetch_desc_amazon(job)
+            elif platform == "greenhouse":
                 return self._fetch_desc_greenhouse(job_id, source_url)
             elif platform == "lever":
                 return self._fetch_desc_lever(job_url)
@@ -151,6 +171,8 @@ class JobScraper:
                 return self._fetch_desc_smartrecruiters(job_id, source_url)
             elif platform == "ashby":
                 return self._fetch_desc_ashby(job_id, source_url)
+            elif platform == "recruitee":
+                return self._fetch_desc_recruitee(job)
             else:
                 return self._fetch_desc_generic(job_url)
         except Exception as e:
@@ -302,6 +324,102 @@ class JobScraper:
             if len(text) > 100:
                 return text[:5000]
         return ""
+
+    # ========== AMAZON JOBS ==========
+    def _fetch_desc_amazon(self, job: Dict) -> str:
+        """Amazon API returns full descriptions inline; just clean up HTML tags."""
+        raw = job.get("description", "")
+        if not raw:
+            return ""
+        # Strip HTML tags from the API response
+        text = re.sub(r'<[^>]+>', ' ', raw)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:5000]
+
+    def _scrape_amazon(self, company: str, url: str) -> List[Dict]:
+        """
+        Scrape Amazon Jobs using the public search.json API.
+        Supports team_category filtering (e.g., amazon-robotics) and
+        country filtering with automatic pagination.
+        """
+        # Extract team category from URL if present
+        # e.g., https://amazon.jobs/content/en/teams/ftr/amazon-robotics#search
+        team_slug = extract_company_slug(url, "amazon")
+        team_category = f"team-{team_slug}" if team_slug else None
+
+        all_jobs = []
+        page_size = 25
+        offset = 0
+        max_pages = 20  # Safety limit: 500 jobs max
+
+        for page in range(max_pages):
+            api_url = (
+                f"https://amazon.jobs/en/search.json"
+                f"?base_query="
+                f"&result_limit={page_size}"
+                f"&sort=recent"
+                f"&offset={offset}"
+                f"&country=USA"
+            )
+            if team_category:
+                api_url += f"&team_category[]={team_category}"
+
+            # Use explicit headers to avoid zstd encoding issues
+            try:
+                resp = self.session.get(
+                    api_url, timeout=self.timeout,
+                    headers={
+                        "Accept": "application/json",
+                        "Accept-Encoding": "gzip, deflate",
+                    }
+                )
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                logger.warning(f"Amazon API request failed at offset {offset}: {e}")
+                break
+
+            try:
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"Amazon API JSON parse error: {e}")
+                break
+
+            total_hits = data.get("hits", 0)
+            jobs_data = data.get("jobs", [])
+
+            if not jobs_data:
+                break
+
+            for j in jobs_data:
+                # Combine description + qualifications for full text
+                desc = j.get("description", "")
+                basic_quals = j.get("basic_qualifications", "")
+                pref_quals = j.get("preferred_qualifications", "")
+                full_desc = f"{desc}\n{basic_quals}\n{pref_quals}"
+
+                job_id = j.get("id_icims", j.get("id", ""))
+                job_path = j.get("job_path", "")
+                job_url = f"https://amazon.jobs{job_path}" if job_path else ""
+
+                all_jobs.append({
+                    "title": j.get("title", ""),
+                    "job_id": job_id,
+                    "location": j.get("normalized_location", j.get("location", "")),
+                    "url": job_url,
+                    "department": j.get("job_category", ""),
+                    "description": full_desc,
+                })
+
+            logger.debug(f"  Amazon page {page+1}: {len(jobs_data)} jobs (total: {total_hits})")
+
+            offset += page_size
+            if offset >= total_hits:
+                break
+            time.sleep(self.delay)
+
+        logger.info(f"  Amazon: found {len(all_jobs)} jobs" +
+                    (f" in team '{team_category}'" if team_category else ""))
+        return all_jobs
 
     # ========== GREENHOUSE ==========
     def _scrape_greenhouse(self, company: str, url: str) -> List[Dict]:
@@ -579,6 +697,47 @@ class JobScraper:
         except Exception as e:
             logger.warning(f"Ashby parse error for {company}: {e}")
             return self._scrape_generic(company, url)
+
+    # ========== RECRUITEE ==========
+    def _scrape_recruitee(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs via the Recruitee public API."""
+        slug = extract_company_slug(url, "recruitee")
+        if not slug:
+            return self._scrape_generic(company, url)
+
+        api_url = f"https://{slug}.recruitee.com/api/offers"
+        resp = self._request(api_url, accept_json=True)
+        if not resp:
+            return self._scrape_generic(company, url)
+
+        try:
+            data = resp.json()
+            offers = data.get("offers", [])
+            jobs = []
+            for o in offers:
+                # Strip HTML from description for a preview
+                raw_desc = o.get("description", "") or ""
+                desc_text = BeautifulSoup(raw_desc, "html.parser").get_text(separator=" ", strip=True) if raw_desc else ""
+
+                job = {
+                    "title": o.get("title", ""),
+                    "job_id": str(o.get("id", "")),
+                    "location": o.get("location", ""),
+                    "url": o.get("careers_url", ""),
+                    "department": o.get("department", ""),
+                    "description": desc_text[:5000],
+                }
+                jobs.append(job)
+
+            logger.info(f"  Recruitee: fetched {len(jobs)} jobs")
+            return jobs
+        except Exception as e:
+            logger.warning(f"Recruitee parse error for {company}: {e}")
+            return self._scrape_generic(company, url)
+
+    def _fetch_desc_recruitee(self, job: Dict) -> str:
+        """Recruitee descriptions are fetched inline during scraping; just return stored text."""
+        return job.get("description", "")
 
     # ========== GENERIC HTML SCRAPER ==========
     def _scrape_generic(self, company: str, url: str) -> List[Dict]:
