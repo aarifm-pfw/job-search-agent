@@ -26,6 +26,9 @@ class Notifier:
         "workday": ("\U0001f4d8", "Workday"),
         "smartrecruiters": ("\U0001f4cb", "SmartRecruiters"),
         "ashby": ("\U0001f537", "Ashby"),
+        "amazon": ("\U0001f4e6", "Amazon"),
+        "recruitee": ("\U0001f465", "Recruitee"),
+        "taleo": ("\U0001f4c4", "Taleo"),
         "generic": ("\U0001f310", "Other / Generic"),
     }
 
@@ -35,10 +38,13 @@ class Notifier:
         "workday": ("#2980b9", "\U0001f4d8 Workday"),
         "smartrecruiters": ("#f39c12", "\U0001f4cb SmartRecruiters"),
         "ashby": ("#3498db", "\U0001f537 Ashby"),
+        "amazon": ("#ff9900", "\U0001f4e6 Amazon"),
+        "recruitee": ("#16a085", "\U0001f465 Recruitee"),
+        "taleo": ("#c0392b", "\U0001f4c4 Taleo"),
         "generic": ("#7f8c8d", "\U0001f310 Other"),
     }
 
-    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "generic"]
+    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "amazon", "recruitee", "taleo", "generic"]
 
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
@@ -115,16 +121,18 @@ class Notifier:
                 for company_name in sorted(companies.keys()):
                     cjobs = companies[company_name]
                     print(f"\n      \U0001f3e2 {company_name} ({len(cjobs)} job{'s' if len(cjobs) != 1 else ''})")
-                    print(f"      {'No.':<5} {'Title':<40} {'Location':<20} {'Score':<6} {'Visa':<6} {'Link'}")
-                    print(f"      {LINE*106}")
+                    print(f"      {'No.':<5} {'Title':<40} {'Job ID':<15} {'Location':<20} {'Score':<6} {'Visa':<6} {'Link'}")
+                    print(f"      {LINE*112}")
 
                     for i, job in enumerate(cjobs, 1):
                         title = (job.get('title') or 'N/A')[:38]
+                        raw_id = job.get('job_id', '')
+                        job_id = (raw_id[:13] if raw_id and not raw_id.startswith('http') else DASH)
                         location = (job.get('location') or 'N/A')[:18]
                         score = job.get('relevance_score', 0)
                         visa = WARN if job.get('visa_unverified') else CHECK
                         link = job.get('url', '')[:45] or DASH
-                        print(f"      {i:<5} {title:<40} {location:<20} {score:<6} {visa:<6} {link}")
+                        print(f"      {i:<5} {title:<40} {job_id:<15} {location:<20} {score:<6} {visa:<6} {link}")
 
         print(f"\n{'='*120}")
         print(f"  {WARN}  = Visa/sponsorship status unverified (description unavailable)")
@@ -211,10 +219,14 @@ class Notifier:
                         visa_icon = '<span style="color:#e74c3c;" title="Visa status unverified">\u26a0\ufe0f</span>' if job.get('visa_unverified') else '<span style="color:#27ae60;" title="Visa keywords checked">\u2705</span>'
                         job_url = job.get('url', '')
                         title_cell = f'<a href="{job_url}" style="color:#2c3e50;text-decoration:none;">{job["title"]}</a>' if job_url else job['title']
+                        # Show job_id only if it's a short identifier (not a full URL)
+                        raw_id = job.get('job_id', '')
+                        job_id_display = raw_id if raw_id and not raw_id.startswith('http') else '-'
 
                         rows += f"""
                         <tr>
                             <td style="padding:5px 8px;border-bottom:1px solid #eee;"><strong>{title_cell}</strong></td>
+                            <td style="padding:5px 8px;border-bottom:1px solid #eee;color:#95a5a6;font-size:11px;">{job_id_display}</td>
                             <td style="padding:5px 8px;border-bottom:1px solid #eee;color:#7f8c8d;">{job.get('location', 'N/A')}</td>
                             <td style="padding:5px 8px;border-bottom:1px solid #eee;text-align:center;">
                                 <span style="background:{score_color};color:white;padding:2px 7px;border-radius:10px;font-size:12px;">{score}</span>
@@ -230,6 +242,7 @@ class Notifier:
                         <table style="width:100%;border-collapse:collapse;background:white;">
                             <tr style="background:#f8f9fa;">
                                 <th style="padding:5px 8px;text-align:left;font-size:11px;">Title</th>
+                                <th style="padding:5px 8px;text-align:left;font-size:11px;">Job ID</th>
                                 <th style="padding:5px 8px;text-align:left;font-size:11px;">Location</th>
                                 <th style="padding:5px 8px;text-align:center;font-size:11px;width:45px;">Score</th>
                                 <th style="padding:5px 8px;text-align:center;font-size:11px;width:35px;">Visa</th>
