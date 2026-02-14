@@ -1,6 +1,6 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
-Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, and generic HTML.
+Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo, and generic HTML.
 """
 
 import re
@@ -36,6 +36,8 @@ def detect_platform(url: str) -> str:
         return "ashby"
     elif "recruitee.com" in url_lower:
         return "recruitee"
+    elif "/go/" in url_lower and re.search(r'/go/[\w-]+/\d+', url_lower):
+        return "taleo"
     else:
         return "generic"
 
@@ -131,6 +133,8 @@ class JobScraper:
                 jobs = self._scrape_ashby(company_name, career_url)
             elif platform == "recruitee":
                 jobs = self._scrape_recruitee(company_name, career_url)
+            elif platform == "taleo":
+                jobs = self._scrape_taleo(company_name, career_url)
             else:
                 jobs = self._scrape_generic(company_name, career_url)
         except Exception as e:
@@ -173,6 +177,8 @@ class JobScraper:
                 return self._fetch_desc_ashby(job_id, source_url)
             elif platform == "recruitee":
                 return self._fetch_desc_recruitee(job)
+            elif platform == "taleo":
+                return self._fetch_desc_taleo(job_url)
             else:
                 return self._fetch_desc_generic(job_url)
         except Exception as e:
@@ -738,6 +744,109 @@ class JobScraper:
     def _fetch_desc_recruitee(self, job: Dict) -> str:
         """Recruitee descriptions are fetched inline during scraping; just return stored text."""
         return job.get("description", "")
+
+    # ========== TALEO ==========
+    def _scrape_taleo(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from a Taleo career board with pagination."""
+        # Extract the base search path (e.g., /go/Search/8797500)
+        parsed = urlparse(url)
+        base_match = re.search(r'(/go/[\w-]+/\d+)', parsed.path)
+        if not base_match:
+            return self._scrape_generic(company, url)
+
+        base_path = base_match.group(1)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        page_size = 25
+        max_pages = 40  # Safety cap: 40 pages x 25 = 1000 jobs
+        all_jobs = []
+        seen_ids = set()
+
+        for page in range(max_pages):
+            offset = page * page_size
+            if offset == 0:
+                page_url = f"{base_url}{base_path}/?q=&sortColumn=referencedate&sortDirection=desc"
+            else:
+                page_url = f"{base_url}{base_path}/{offset}/?q=&sortColumn=referencedate&sortDirection=desc"
+
+            resp = self._request(page_url)
+            if not resp:
+                break
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            table = soup.find("table", id="searchresults")
+            if not table:
+                break
+
+            rows = table.find_all("tr", class_="data-row")
+            if not rows:
+                break
+
+            for row in rows:
+                tds = row.find_all("td")
+                if len(tds) < 2:
+                    continue
+
+                # Title and URL from the first column
+                title_link = row.find("a", href=lambda h: h and "/job/" in h)
+                if not title_link:
+                    continue
+
+                title = title_link.get_text(strip=True)
+                href = title_link["href"]
+                job_url = urljoin(base_url, href)
+
+                # Extract job ID from URL: /job/.../1350587900/
+                id_match = re.search(r'/(\d{5,})/?$', href)
+                job_id = id_match.group(1) if id_match else job_url
+
+                # Skip duplicates (Taleo shows each job twice: desktop + mobile)
+                if job_id in seen_ids:
+                    continue
+                seen_ids.add(job_id)
+
+                # Location from second column
+                location = tds[1].get_text(strip=True) if len(tds) > 1 else ""
+
+                all_jobs.append({
+                    "title": title,
+                    "job_id": job_id,
+                    "location": location,
+                    "url": job_url,
+                    "department": "",
+                    "description": "",
+                })
+
+            logger.debug(f"  Taleo page {page+1}: {len(rows)} rows, {len(all_jobs)} unique jobs so far")
+
+            # Stop if fewer rows than expected (last page)
+            if len(rows) < page_size:
+                break
+
+            time.sleep(self.delay)
+
+        if all_jobs:
+            logger.info(f"  Taleo: fetched {len(all_jobs)} total jobs across {page+1} page(s)")
+            return all_jobs
+
+        return self._scrape_generic(company, url)
+
+    def _fetch_desc_taleo(self, job_url: str) -> str:
+        """Fetch description from a Taleo job detail page."""
+        if not job_url:
+            return ""
+        resp = self._request(job_url)
+        if resp:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # Taleo job pages put description in a div with class containing 'job-description'
+            desc_div = soup.find("div", class_=re.compile(r"job.?desc|description", re.I))
+            if not desc_div:
+                desc_div = soup.find("div", id=re.compile(r"job.?desc|description", re.I))
+            if not desc_div:
+                # Fallback: try the main content area
+                desc_div = soup.find("div", class_="contentWrapper") or soup.find("main")
+            if desc_div:
+                return desc_div.get_text(separator=" ", strip=True)[:5000]
+        return ""
 
     # ========== GENERIC HTML SCRAPER ==========
     def _scrape_generic(self, company: str, url: str) -> List[Dict]:
