@@ -338,10 +338,10 @@ class SkillMatcher:
         Evaluate a job against configured criteria with synonym expansion.
         Returns: (is_match, relevance_score, matched_keywords)
         """
-        title = job.get("title", "").lower()
-        description = job.get("description", "").lower()
-        location = job.get("location", "").lower()
-        department = job.get("department", "").lower()
+        title = (job.get("title") or "").lower()
+        description = (job.get("description") or "").lower()
+        location = (job.get("location") or "").lower()
+        department = (job.get("department") or "").lower()
         searchable = f"{title} {description} {department}"
 
         # --- EXCLUSION CHECK (full text) ---
@@ -412,7 +412,7 @@ class SkillMatcher:
                     break
 
         # --- LOCATION SCORE ---
-        loc_score = self._score_location(job.get("location", ""))
+        loc_score = self._score_location(job.get("location") or "")
 
         # If a country filter is set, REJECT jobs outside that country
         # (loc_score 0 means: not in target country, not remote, not preferred city)
