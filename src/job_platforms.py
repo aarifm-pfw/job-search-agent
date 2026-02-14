@@ -555,11 +555,17 @@ class JobScraper:
         # Try multiple Workday domain variants (wd1 through wd5)
         wd_domain = None
         for wd_num in range(1, 6):
-            test_url = f"https://{slug}.wd{wd_num}.myworkdayjobs.com/wday/cxs/{slug}/{site_name}/jobs"
+            base_domain = f"{slug}.wd{wd_num}.myworkdayjobs.com"
+            test_url = f"https://{base_domain}/wday/cxs/{slug}/{site_name}/jobs"
             try:
                 test_resp = self.session.post(test_url, json={"limit": 1, "offset": 0}, timeout=10,
-                                              headers={"Content-Type": "application/json"})
-                if test_resp.status_code == 200:
+                                              headers={
+                                                  "Content-Type": "application/json",
+                                                  "Accept": "application/json",
+                                                  "Referer": f"https://{base_domain}/{site_name}/",
+                                                  "Origin": f"https://{base_domain}",
+                                              })
+                if test_resp.status_code == 200 and test_resp.text.strip().startswith("{"):
                     wd_domain = f"wd{wd_num}"
                     break
             except Exception:
@@ -568,8 +574,14 @@ class JobScraper:
         if not wd_domain:
             wd_domain = "wd1"  # fallback
 
-        api_url = f"https://{slug}.{wd_domain}.myworkdayjobs.com/wday/cxs/{slug}/{site_name}/jobs"
-        headers = {"Content-Type": "application/json"}
+        base_domain = f"{slug}.{wd_domain}.myworkdayjobs.com"
+        api_url = f"https://{base_domain}/wday/cxs/{slug}/{site_name}/jobs"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": f"https://{base_domain}/{site_name}/",
+            "Origin": f"https://{base_domain}",
+        }
         page_size = 20
         max_pages = 50  # Safety cap: 50 pages × 20 = 1000 jobs max
         all_jobs = []
@@ -581,6 +593,11 @@ class JobScraper:
                 resp = self.session.post(api_url, json=payload, timeout=self.timeout, headers=headers)
 
                 if resp.status_code != 200:
+                    break
+
+                # Validate response is JSON before parsing
+                if not resp.text.strip().startswith("{"):
+                    logger.warning(f"Workday returned non-JSON response for {company} (page {page+1})")
                     break
 
                 data = resp.json()
