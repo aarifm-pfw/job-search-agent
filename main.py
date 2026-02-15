@@ -37,6 +37,7 @@ def setup_logging(verbose: bool = False):
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
     )
     # Always suppress noisy third-party loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
