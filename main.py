@@ -39,10 +39,12 @@ def setup_logging(verbose: bool = False):
         datefmt="%Y-%m-%d %H:%M:%S",
         force=True,
     )
-    # Always suppress noisy third-party loggers
+    # Always suppress noisy loggers — even with --verbose, per-page
+    # pagination debug output from scrapers is not useful for operators.
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("requests").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+    logging.getLogger("src.job_platforms").setLevel(logging.INFO)
 
 
 def load_config(config_path: str) -> dict:
