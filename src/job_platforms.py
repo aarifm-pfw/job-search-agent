@@ -1,6 +1,6 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
-Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo, and generic HTML.
+Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo, Oracle HCM Cloud, and generic HTML.
 """
 
 import re
@@ -38,6 +38,8 @@ def detect_platform(url: str) -> str:
         return "recruitee"
     elif "/go/" in url_lower and re.search(r'/go/[\w-]+/\d+', url_lower):
         return "taleo"
+    elif ".oraclecloud.com" in url_lower or "candidateexperience" in url_lower:
+        return "oraclecloud"
     else:
         return "generic"
 
@@ -77,6 +79,11 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
             # https://1x.recruitee.com/ → "1x"
             match = re.search(r'([\w-]+)\.recruitee\.com', url)
             return match.group(1) if match else None
+        elif platform == "oraclecloud":
+            # https://hctz.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1001/jobs
+            # Extract base host identifier (e.g., "hctz") and cloud region (e.g., "fa.us2")
+            match = re.search(r'([\w-]+)\.(fa\.\w+)\.oraclecloud\.com', url)
+            return f"{match.group(1)}.{match.group(2)}" if match else None
     except Exception:
         pass
     return None
@@ -135,6 +142,8 @@ class JobScraper:
                 jobs = self._scrape_recruitee(company_name, career_url)
             elif platform == "taleo":
                 jobs = self._scrape_taleo(company_name, career_url)
+            elif platform == "oraclecloud":
+                jobs = self._scrape_oracle_hcm(company_name, career_url)
             else:
                 jobs = self._scrape_generic(company_name, career_url)
         except Exception as e:
@@ -179,6 +188,8 @@ class JobScraper:
                 return self._fetch_desc_recruitee(job)
             elif platform == "taleo":
                 return self._fetch_desc_taleo(job_url)
+            elif platform == "oraclecloud":
+                return self._fetch_desc_oracle_hcm(job)
             else:
                 return self._fetch_desc_generic(job_url)
         except Exception as e:
@@ -864,6 +875,148 @@ class JobScraper:
             if desc_div:
                 return desc_div.get_text(separator=" ", strip=True)[:5000]
         return ""
+
+    # ========== ORACLE HCM CLOUD ==========
+    def _scrape_oracle_hcm(self, company: str, url: str) -> List[Dict]:
+        """Oracle HCM Cloud / Oracle Recruiting Cloud career sites.
+        Uses the public recruitingCEJobRequisitions REST API."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.hostname}"
+
+        # Extract site number from URL path (e.g., CX_1001 from /sites/CX_1001/)
+        site_match = re.search(r'/sites/([\w_]+)', url)
+        if not site_match:
+            logger.warning(f"Oracle HCM: could not extract site number from {url}")
+            return self._scrape_generic(company, url)
+        site_number = site_match.group(1)
+
+        api_url = f"{base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitions"
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Referer": url,
+            "Origin": base_url,
+        }
+        page_size = 25
+        max_pages = 40  # Safety cap: 40 pages x 25 = 1000 jobs max
+        all_jobs = []
+
+        try:
+            # First, visit the career page to establish session cookies
+            self.session.get(url, timeout=self.timeout, headers={"Accept": "text/html"})
+
+            for page in range(max_pages):
+                offset = page * page_size
+                params = {
+                    "onlyData": "true",
+                    "expand": "requisitionList.secondaryLocations,flexFieldsFacet.values",
+                    "finder": (
+                        f"findReqs;siteNumber={site_number},"
+                        f"facetsList=LOCATIONS;WORK_LOCATIONS;WORKPLACE_TYPES;TITLES;CATEGORIES;ORGANIZATIONS;POSTING_DATES;FLEX_FIELDS,"
+                        f"limit={page_size},offset={offset}"
+                    ),
+                }
+                resp = self.session.get(api_url, params=params, timeout=self.timeout, headers=headers)
+
+                if resp.status_code != 200:
+                    logger.warning(f"Oracle HCM API returned {resp.status_code} for {company} (page {page+1})")
+                    break
+
+                if not resp.text.strip().startswith(("{", "[")):
+                    logger.warning(f"Oracle HCM returned non-JSON response for {company} (page {page+1})")
+                    break
+
+                data = resp.json()
+                items = data.get("items", [])
+                if not items:
+                    break
+
+                requisitions = items[0].get("requisitionList", [])
+                total_count = items[0].get("TotalJobsCount", 0)
+
+                if not requisitions:
+                    break
+
+                for r in requisitions:
+                    req_id = str(r.get("Id", ""))
+                    title = r.get("Title", "")
+                    location = r.get("PrimaryLocation", "")
+                    department = r.get("DepartmentName", "") or r.get("BusinessUnitName", "")
+                    # Build the candidate-facing URL for this job
+                    job_url = f"{base_url}/hcmUI/CandidateExperience/en/sites/{site_number}/job/{req_id}"
+
+                    job = {
+                        "title": title,
+                        "job_id": req_id,
+                        "location": location,
+                        "url": job_url,
+                        "department": department,
+                        "description": "",
+                        "_oracle_base_url": base_url,
+                        "_oracle_site_number": site_number,
+                    }
+                    all_jobs.append(job)
+
+                logger.info(f"  Oracle HCM page {page+1}: got {len(requisitions)} jobs (API total: {total_count})")
+
+                if len(requisitions) < page_size:
+                    break
+
+                time.sleep(1)
+
+            if all_jobs:
+                logger.info(f"  Oracle HCM pagination: fetched {len(all_jobs)} total jobs across {page+1} page(s)")
+                return all_jobs
+
+        except Exception as e:
+            logger.warning(f"Oracle HCM API failed for {company}: {e}")
+
+        return self._scrape_generic(company, url)
+
+    def _fetch_desc_oracle_hcm(self, job: Dict) -> str:
+        """Fetch full description from Oracle HCM job detail API."""
+        req_id = job.get("job_id", "")
+        base_url = job.get("_oracle_base_url", "")
+        site_number = job.get("_oracle_site_number", "")
+
+        if not req_id or not base_url or not site_number:
+            return self._fetch_desc_generic(job.get("url", ""))
+
+        detail_url = (
+            f"{base_url}/hcmRestApi/resources/latest/recruitingCEJobRequisitionDetails/{req_id}"
+            f"?onlyData=true&expand=all&siteNumber={site_number}"
+        )
+        headers = {
+            "Accept": "application/json",
+            "Referer": job.get("url", base_url),
+            "Origin": base_url,
+        }
+
+        try:
+            resp = self.session.get(detail_url, timeout=self.timeout, headers=headers)
+            if resp.status_code != 200:
+                return ""
+
+            if not resp.text.strip().startswith(("{", "[")):
+                return ""
+
+            data = resp.json()
+            items = data.get("items", [])
+            if not items:
+                return ""
+
+            detail = items[0] if items else {}
+            parts = []
+            for field in ("ExternalDescriptionStr", "ExternalQualificationsStr", "ExternalResponsibilitiesStr"):
+                html_content = detail.get(field, "")
+                if html_content:
+                    text = BeautifulSoup(html_content, "html.parser").get_text(separator=" ", strip=True)
+                    parts.append(text)
+
+            return " ".join(parts)[:5000]
+        except Exception as e:
+            logger.debug(f"  Oracle HCM description fetch failed: {e}")
+            return ""
 
     # ========== GENERIC HTML SCRAPER ==========
     def _scrape_generic(self, company: str, url: str) -> List[Dict]:
