@@ -427,7 +427,7 @@ class JobScraper:
                     "description": full_desc,
                 })
 
-            logger.debug(f"  Amazon page {page+1}: {len(jobs_data)} jobs (total: {total_hits})")
+            logger.info(f"  Amazon page {page+1}: {len(jobs_data)} jobs (total: {total_hits})")
 
             offset += page_size
             if offset >= total_hits:
@@ -475,7 +475,7 @@ class JobScraper:
                         job["department"] = depts[0].get("name", "")
                     all_jobs.append(job)
 
-                logger.debug(f"  Greenhouse page {page}: got {len(postings)} jobs (total: {total})")
+                logger.info(f"  Greenhouse page {page}: got {len(postings)} jobs (total: {total})")
 
                 if len(postings) < page_size:
                     break
@@ -527,7 +527,7 @@ class JobScraper:
                     }
                     all_jobs.append(job)
 
-                logger.debug(f"  Lever page {page+1}: got {len(data)} jobs")
+                logger.info(f"  Lever page {page+1}: got {len(data)} jobs")
 
                 # Stop if fewer results than page size (last page)
                 if len(data) < page_size:
@@ -629,7 +629,7 @@ class JobScraper:
                     }
                     all_jobs.append(job)
 
-                logger.debug(f"  Workday page {page+1}: got {len(postings)} jobs (API total: {total})")
+                logger.info(f"  Workday page {page+1}: got {len(postings)} jobs (API total: {total})")
 
                 # Stop ONLY if we got fewer results than requested (last page)
                 # Do NOT trust 'total' — many Workday sites report incorrect totals
@@ -682,7 +682,7 @@ class JobScraper:
                     }
                     all_jobs.append(job)
 
-                logger.debug(f"  SmartRecruiters page {page+1}: got {len(postings)} jobs (total: {total})")
+                logger.info(f"  SmartRecruiters page {page+1}: got {len(postings)} jobs (total: {total})")
 
                 if len(all_jobs) >= total or len(postings) < page_size:
                     break
@@ -844,7 +844,7 @@ class JobScraper:
                     "description": "",
                 })
 
-            logger.debug(f"  Taleo page {page+1}: {len(rows)} rows, {len(all_jobs)} unique jobs so far")
+            logger.info(f"  Taleo page {page+1}: {len(rows)} rows, {len(all_jobs)} unique jobs so far")
 
             # Stop if fewer rows than expected (last page)
             if len(rows) < page_size:
