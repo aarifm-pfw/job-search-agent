@@ -29,6 +29,7 @@ class Notifier:
         "amazon": ("\U0001f4e6", "Amazon"),
         "recruitee": ("\U0001f465", "Recruitee"),
         "taleo": ("\U0001f4c4", "Taleo"),
+        "oraclecloud": ("\u2601\ufe0f", "Oracle HCM Cloud"),
         "generic": ("\U0001f310", "Other / Generic"),
     }
 
@@ -41,10 +42,11 @@ class Notifier:
         "amazon": ("#ff9900", "\U0001f4e6 Amazon"),
         "recruitee": ("#16a085", "\U0001f465 Recruitee"),
         "taleo": ("#c0392b", "\U0001f4c4 Taleo"),
+        "oraclecloud": ("#e74c3c", "\u2601\ufe0f Oracle HCM Cloud"),
         "generic": ("#7f8c8d", "\U0001f310 Other"),
     }
 
-    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "amazon", "recruitee", "taleo", "generic"]
+    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "generic"]
 
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
