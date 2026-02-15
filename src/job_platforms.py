@@ -957,7 +957,7 @@ class JobScraper:
                     }
                     all_jobs.append(job)
 
-                logger.info(f"  Oracle HCM page {page+1}: got {len(requisitions)} jobs (API total: {total_count})")
+                logger.debug(f"  Oracle HCM page {page+1}: got {len(requisitions)} jobs (API total: {total_count})")
 
                 if len(requisitions) < page_size:
                     break
