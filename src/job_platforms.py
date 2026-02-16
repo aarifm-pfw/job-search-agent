@@ -1,6 +1,7 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
-Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo, Oracle HCM Cloud, and generic HTML.
+Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo,
+Oracle HCM Cloud, Jobvite/TTC, iCIMS, Tesla, and generic HTML.
 """
 
 import re
@@ -28,7 +29,7 @@ def detect_platform(url: str) -> str:
         return "workday"
     elif "smartrecruiters.com" in url_lower:
         return "smartrecruiters"
-    elif "jobvite.com" in url_lower:
+    elif "jobvite.com" in url_lower or "ttcportals.com" in url_lower:
         return "jobvite"
     elif "icims.com" in url_lower:
         return "icims"
@@ -40,6 +41,16 @@ def detect_platform(url: str) -> str:
         return "taleo"
     elif ".oraclecloud.com" in url_lower or "candidateexperience" in url_lower:
         return "oraclecloud"
+    # iCIMS / Taleo Enterprise custom domains:
+    # /en_US/careers/SearchJobs, /careers-home/jobs, or /search/?createNewAlert=...
+    elif (re.search(r'/en[_-]\w+/careers/', url_lower)
+          or "/careers-home/jobs" in url_lower
+          or "createnewalert" in url_lower
+          or "optionsfacetsdd_" in url_lower):
+        return "icims"
+    # Tesla custom career site
+    elif "tesla.com/careers" in url_lower:
+        return "tesla"
     else:
         return "generic"
 
@@ -84,6 +95,21 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
             # Extract base host identifier (e.g., "hctz") and cloud region (e.g., "fa.us2")
             match = re.search(r'([\w-]+)\.(fa\.\w+)\.oraclecloud\.com', url)
             return f"{match.group(1)}.{match.group(2)}" if match else None
+        elif platform == "jobvite":
+            # https://parkercareers.ttcportals.com/jobs/search → "parkercareers"
+            # or https://jobs.jobvite.com/company → "company"
+            if "ttcportals.com" in url:
+                match = re.search(r'([\w-]+)\.ttcportals\.com', url)
+                return match.group(1) if match else None
+            match = re.search(r'jobvite\.com/([\w-]+)', url)
+            return match.group(1) if match else None
+        elif platform == "icims":
+            # Custom domain iCIMS: https://careers.tsmc.com/en_US/careers/SearchJobs
+            # or https://jobs-company.icims.com/...
+            parsed = urlparse(url)
+            return parsed.hostname
+        elif platform == "tesla":
+            return "tesla"
     except Exception:
         pass
     return None
@@ -144,6 +170,12 @@ class JobScraper:
                 jobs = self._scrape_taleo(company_name, career_url)
             elif platform == "oraclecloud":
                 jobs = self._scrape_oracle_hcm(company_name, career_url)
+            elif platform == "jobvite":
+                jobs = self._scrape_jobvite(company_name, career_url)
+            elif platform == "icims":
+                jobs = self._scrape_icims(company_name, career_url)
+            elif platform == "tesla":
+                jobs = self._scrape_tesla(company_name, career_url)
             else:
                 jobs = self._scrape_generic(company_name, career_url)
         except Exception as e:
@@ -190,6 +222,12 @@ class JobScraper:
                 return self._fetch_desc_taleo(job_url)
             elif platform == "oraclecloud":
                 return self._fetch_desc_oracle_hcm(job)
+            elif platform == "jobvite":
+                return self._fetch_desc_jobvite(job_url)
+            elif platform == "icims":
+                return self._fetch_desc_icims(job_url)
+            elif platform == "tesla":
+                return self._fetch_desc_tesla(job_url)
             else:
                 return self._fetch_desc_generic(job_url)
         except Exception as e:
@@ -1017,6 +1055,853 @@ class JobScraper:
         except Exception as e:
             logger.debug(f"  Oracle HCM description fetch failed: {e}")
             return ""
+
+    # ========== JOBVITE / TTC PORTALS ==========
+    def _scrape_jobvite(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from Jobvite career sites (including ttcportals.com).
+        Jobvite/TTC sites serve server-rendered HTML with job links at /jobs/ID-slug.
+        Also tries sitemap and feed-based approaches."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        all_jobs = []
+        seen_ids = set()
+
+        # Strategy 1: Try sitemap first (most reliable for full job list)
+        sitemap_urls = [
+            f"{base_url}/sitemap.xml",
+            f"{base_url}/sitemap_index.xml",
+        ]
+        for sitemap_url in sitemap_urls:
+            try:
+                resp = self.session.get(sitemap_url, timeout=self.timeout,
+                                        headers={"Accept": "application/xml, text/xml"})
+                if resp.status_code == 200 and "<urlset" in resp.text:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    for loc in soup.find_all("loc"):
+                        loc_url = loc.get_text(strip=True)
+                        # Match job URLs like /jobs/17317610-engineer-iii
+                        job_match = re.search(r'/jobs/(\d+)-([\w-]+)', loc_url)
+                        if job_match:
+                            job_id = job_match.group(1)
+                            if job_id in seen_ids:
+                                continue
+                            seen_ids.add(job_id)
+                            # Convert slug to title: "engineer-iii" → "Engineer Iii"
+                            slug = job_match.group(2)
+                            title = slug.replace('-', ' ').title()
+                            all_jobs.append({
+                                "title": title,
+                                "job_id": job_id,
+                                "location": "",
+                                "url": loc_url,
+                                "department": "",
+                                "description": "",
+                            })
+                    if all_jobs:
+                        logger.info(f"  Jobvite sitemap: found {len(all_jobs)} jobs")
+                        break
+            except Exception:
+                continue
+
+        # Strategy 2: Scrape the search page HTML for job links
+        if not all_jobs:
+            # Try multiple search page variants
+            search_urls = [url]
+            if "/jobs/search" in url:
+                search_urls.append(f"{base_url}/search/jobs")
+                search_urls.append(f"{base_url}/search/all/jobs")
+
+            for search_url in search_urls:
+                resp = self._request(search_url)
+                if not resp:
+                    continue
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                # Look for job links matching /jobs/ID-slug pattern
+                for link in soup.find_all("a", href=True):
+                    href = link.get("href", "")
+                    text = link.get_text(strip=True)
+                    job_match = re.search(r'/jobs/(\d+)-([\w-]+)', href)
+                    if job_match and text and len(text) >= 5 and len(text) <= 200:
+                        job_id = job_match.group(1)
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        full_url = urljoin(base_url, href)
+                        all_jobs.append({
+                            "title": text,
+                            "job_id": job_id,
+                            "location": "",
+                            "url": full_url,
+                            "department": "",
+                            "description": "",
+                        })
+
+                # Also look for JSON-LD structured data
+                for script in soup.find_all("script", type="application/ld+json"):
+                    try:
+                        ld_data = json.loads(script.string or "")
+                        items = []
+                        if isinstance(ld_data, list):
+                            items = ld_data
+                        elif isinstance(ld_data, dict):
+                            if ld_data.get("@type") == "JobPosting":
+                                items = [ld_data]
+                            elif "itemListElement" in ld_data:
+                                items = [i.get("item", i) for i in ld_data["itemListElement"]]
+
+                        for item in items:
+                            if item.get("@type") != "JobPosting":
+                                continue
+                            title = item.get("title", "")
+                            job_url = item.get("url", "")
+                            job_id = re.search(r'/jobs/(\d+)', job_url)
+                            jid = job_id.group(1) if job_id else job_url
+                            if jid in seen_ids:
+                                continue
+                            seen_ids.add(jid)
+                            loc = item.get("jobLocation", {})
+                            if isinstance(loc, dict):
+                                addr = loc.get("address", {})
+                                location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                            elif isinstance(loc, list) and loc:
+                                addr = loc[0].get("address", {})
+                                location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                            else:
+                                location = ""
+                            all_jobs.append({
+                                "title": title,
+                                "job_id": jid,
+                                "location": location,
+                                "url": job_url,
+                                "department": item.get("occupationalCategory", ""),
+                                "description": "",
+                            })
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if all_jobs:
+                    logger.info(f"  Jobvite HTML: found {len(all_jobs)} jobs")
+                    break
+
+                time.sleep(1)
+
+        # Strategy 3: Try paginated search (/search/jobs/page/N)
+        if not all_jobs:
+            max_pages = 20
+            for page in range(1, max_pages + 1):
+                page_url = f"{base_url}/search/jobs/page/{page}"
+                resp = self._request(page_url)
+                if not resp or resp.status_code != 200:
+                    break
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                page_jobs = []
+                for link in soup.find_all("a", href=True):
+                    href = link.get("href", "")
+                    text = link.get_text(strip=True)
+                    job_match = re.search(r'/jobs/(\d+)-([\w-]+)', href)
+                    if job_match and text and len(text) >= 5:
+                        job_id = job_match.group(1)
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        full_url = urljoin(base_url, href)
+                        page_jobs.append({
+                            "title": text,
+                            "job_id": job_id,
+                            "location": "",
+                            "url": full_url,
+                            "department": "",
+                            "description": "",
+                        })
+
+                if not page_jobs:
+                    break
+                all_jobs.extend(page_jobs)
+                logger.debug(f"  Jobvite page {page}: got {len(page_jobs)} jobs")
+                time.sleep(self.delay)
+
+            if all_jobs:
+                logger.info(f"  Jobvite pagination: fetched {len(all_jobs)} total jobs across {page} page(s)")
+
+        if all_jobs:
+            return all_jobs
+
+        return self._scrape_generic(company, url)
+
+    def _fetch_desc_jobvite(self, job_url: str) -> str:
+        """Fetch description from a Jobvite/TTC job detail page."""
+        if not job_url:
+            return ""
+        resp = self._request(job_url)
+        if not resp:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Try JSON-LD structured data first (most reliable)
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld_data = json.loads(script.string or "")
+                if isinstance(ld_data, dict) and ld_data.get("@type") == "JobPosting":
+                    desc = ld_data.get("description", "")
+                    if desc:
+                        text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                        return text[:5000]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Try common description containers
+        for selector in [
+            {"class": re.compile(r"job.?desc|posting.?desc|jv.?desc|description", re.I)},
+            {"class": re.compile(r"content|body|detail", re.I)},
+            {"id": re.compile(r"job.?desc|description|job.?detail", re.I)},
+        ]:
+            container = soup.find("div", selector)
+            if container and len(container.get_text(strip=True)) > 100:
+                return container.get_text(separator=" ", strip=True)[:5000]
+
+        # Fallback to article or main content
+        for tag in ["article", "main"]:
+            container = soup.find(tag)
+            if container and len(container.get_text(strip=True)) > 100:
+                return container.get_text(separator=" ", strip=True)[:5000]
+
+        return self._fetch_desc_generic(job_url)
+
+    # ========== iCIMS ==========
+    def _scrape_icims(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from iCIMS career sites (including custom domains).
+        iCIMS sites are JS SPAs, so we try multiple strategies:
+        1. Embedded JSON-LD structured data
+        2. Sitemap-based discovery
+        3. Known iCIMS API endpoint patterns
+        4. HTML link parsing (some iCIMS sites server-render links)
+        """
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        all_jobs = []
+        seen_ids = set()
+
+        # Strategy 1: Fetch the page and look for embedded data
+        resp = self._request(url)
+        if resp:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Check for JSON-LD JobPosting data
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    ld_data = json.loads(script.string or "")
+                    items = []
+                    if isinstance(ld_data, list):
+                        items = ld_data
+                    elif isinstance(ld_data, dict):
+                        if ld_data.get("@type") == "JobPosting":
+                            items = [ld_data]
+                        elif "itemListElement" in ld_data:
+                            items = [i.get("item", i) for i in ld_data["itemListElement"]]
+
+                    for item in items:
+                        if item.get("@type") != "JobPosting":
+                            continue
+                        title = item.get("title", "")
+                        job_url = item.get("url", "")
+                        jid = item.get("identifier", {})
+                        if isinstance(jid, dict):
+                            job_id = str(jid.get("value", job_url))
+                        else:
+                            job_id = str(jid) if jid else job_url
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        loc = item.get("jobLocation", {})
+                        if isinstance(loc, dict):
+                            addr = loc.get("address", {})
+                            location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                        elif isinstance(loc, list) and loc:
+                            addr = loc[0].get("address", {})
+                            location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                        else:
+                            location = ""
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": location,
+                            "url": job_url or url,
+                            "department": item.get("occupationalCategory", ""),
+                            "description": "",
+                        })
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            if all_jobs:
+                logger.info(f"  iCIMS JSON-LD: found {len(all_jobs)} jobs")
+                return all_jobs
+
+            # Check for embedded JSON data in script tags (e.g., __NEXT_DATA__, __INITIAL_STATE__)
+            for script in soup.find_all("script"):
+                script_text = script.string or ""
+                for pattern in [r'__NEXT_DATA__\s*=\s*({.*?})\s*;',
+                                r'__INITIAL_STATE__\s*=\s*({.*?})\s*;',
+                                r'window\.__data__\s*=\s*({.*?})\s*;']:
+                    match = re.search(pattern, script_text, re.DOTALL)
+                    if match:
+                        try:
+                            data = json.loads(match.group(1))
+                            # Navigate the JSON structure looking for job arrays
+                            jobs_data = self._find_jobs_in_json(data)
+                            for j in jobs_data:
+                                title = j.get("title", j.get("Title", j.get("name", "")))
+                                job_id = str(j.get("id", j.get("Id", j.get("job_id", j.get("requisitionId", "")))))
+                                if not title or job_id in seen_ids:
+                                    continue
+                                seen_ids.add(job_id)
+                                location = j.get("location", j.get("Location", j.get("PrimaryLocation", "")))
+                                if isinstance(location, dict):
+                                    location = location.get("name", str(location))
+                                job_detail_url = j.get("url", j.get("applyUrl", ""))
+                                if not job_detail_url and job_id:
+                                    job_detail_url = f"{base_url}/en_US/careers/JobDetail/{job_id}"
+                                all_jobs.append({
+                                    "title": title,
+                                    "job_id": job_id,
+                                    "location": str(location) if location else "",
+                                    "url": job_detail_url,
+                                    "department": j.get("department", j.get("Department", j.get("category", ""))),
+                                    "description": "",
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+
+            if all_jobs:
+                logger.info(f"  iCIMS embedded JSON: found {len(all_jobs)} jobs")
+                return all_jobs
+
+            # Look for job links in the HTML (some iCIMS sites render partial HTML)
+            job_link_patterns = [
+                re.compile(r'/careers?/JobDetail/.*?/(\d+)', re.I),
+                re.compile(r'/job/.*?/(\d+)/?$', re.I),
+                re.compile(r'/jobs?/(\d+)', re.I),
+            ]
+            for link in soup.find_all("a", href=True):
+                href = link.get("href", "")
+                text = link.get_text(strip=True)
+                if not text or len(text) < 5 or len(text) > 200:
+                    continue
+
+                for pat in job_link_patterns:
+                    id_match = pat.search(href)
+                    if id_match:
+                        job_id = id_match.group(1)
+                        if job_id in seen_ids:
+                            break
+                        seen_ids.add(job_id)
+                        full_url = urljoin(base_url, href)
+                        all_jobs.append({
+                            "title": text,
+                            "job_id": job_id,
+                            "location": "",
+                            "url": full_url,
+                            "department": "",
+                            "description": "",
+                        })
+                        break
+
+            if all_jobs:
+                logger.info(f"  iCIMS HTML links: found {len(all_jobs)} jobs")
+                return all_jobs
+
+        # Strategy 2: Try sitemap-based discovery
+        sitemap_paths = ["/sitemap.xml", "/sitemap-jobs.xml", "/sitemap_index.xml"]
+        for spath in sitemap_paths:
+            sitemap_url = f"{base_url}{spath}"
+            try:
+                resp = self.session.get(sitemap_url, timeout=self.timeout,
+                                        headers={"Accept": "application/xml, text/xml"})
+                if resp.status_code != 200 or "<urlset" not in resp.text:
+                    continue
+
+                soup = BeautifulSoup(resp.text, "html.parser")
+                for loc in soup.find_all("loc"):
+                    loc_url = loc.get_text(strip=True)
+                    for pat in job_link_patterns:
+                        id_match = pat.search(loc_url)
+                        if id_match:
+                            job_id = id_match.group(1)
+                            if job_id in seen_ids:
+                                break
+                            seen_ids.add(job_id)
+                            # Extract title from URL slug
+                            slug_match = re.search(r'/(?:JobDetail|job)/(.*?)/' + job_id, loc_url)
+                            title = slug_match.group(1).replace('-', ' ').title() if slug_match else f"Job {job_id}"
+                            all_jobs.append({
+                                "title": title,
+                                "job_id": job_id,
+                                "location": "",
+                                "url": loc_url,
+                                "department": "",
+                                "description": "",
+                            })
+                            break
+
+                if all_jobs:
+                    logger.info(f"  iCIMS sitemap: found {len(all_jobs)} jobs")
+                    return all_jobs
+            except Exception:
+                continue
+
+        # Strategy 3: Try known iCIMS-style API endpoints
+        api_endpoints = [
+            f"{base_url}/api/jobs",
+            f"{base_url}/api/apply/v2/jobs/search",
+            f"{base_url}/.rest/api/v1/search/offers",
+        ]
+        for api_url in api_endpoints:
+            try:
+                # POST for search endpoints
+                resp = self.session.post(
+                    api_url, timeout=self.timeout,
+                    json={"searchText": "", "limit": 100, "offset": 0, "lang": "en_us"},
+                    headers={"Accept": "application/json", "Content-Type": "application/json"}
+                )
+                if resp.status_code == 200 and resp.text.strip().startswith(("{", "[")):
+                    data = resp.json()
+                    # Try to find job listings in various response formats
+                    job_list = (data.get("jobs", []) or data.get("results", [])
+                                or data.get("content", []) or data.get("data", []))
+                    if isinstance(data, list):
+                        job_list = data
+                    for j in job_list:
+                        title = j.get("title", j.get("Title", ""))
+                        job_id = str(j.get("id", j.get("Id", j.get("requisitionId", ""))))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        location = j.get("location", j.get("Location", ""))
+                        if isinstance(location, dict):
+                            location = location.get("name", str(location))
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": j.get("url", j.get("applyUrl", "")),
+                            "department": j.get("department", j.get("category", "")),
+                            "description": "",
+                        })
+                    if all_jobs:
+                        logger.info(f"  iCIMS API ({api_url}): found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+            # Also try GET
+            try:
+                resp = self.session.get(
+                    api_url, timeout=self.timeout,
+                    params={"limit": 100, "offset": 0, "locale": "en_US"},
+                    headers={"Accept": "application/json"}
+                )
+                if resp.status_code == 200 and resp.text.strip().startswith(("{", "[")):
+                    data = resp.json()
+                    job_list = (data.get("jobs", []) or data.get("results", [])
+                                or data.get("content", []) or data.get("data", []))
+                    if isinstance(data, list):
+                        job_list = data
+                    for j in job_list:
+                        title = j.get("title", j.get("Title", ""))
+                        job_id = str(j.get("id", j.get("Id", "")))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        location = j.get("location", j.get("Location", ""))
+                        if isinstance(location, dict):
+                            location = location.get("name", str(location))
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": j.get("url", j.get("applyUrl", "")),
+                            "department": j.get("department", j.get("category", "")),
+                            "description": "",
+                        })
+                    if all_jobs:
+                        logger.info(f"  iCIMS API GET ({api_url}): found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+        logger.warning(f"iCIMS: all strategies exhausted for {company} ({url})")
+        return self._scrape_generic(company, url)
+
+    def _find_jobs_in_json(self, data, depth=0) -> list:
+        """Recursively search a nested JSON structure for arrays of job-like objects."""
+        if depth > 5:
+            return []
+        if isinstance(data, list) and len(data) > 0:
+            # Check if this looks like a jobs array
+            if isinstance(data[0], dict) and any(k in data[0] for k in ("title", "Title", "name", "requisitionId")):
+                return data
+        if isinstance(data, dict):
+            # Check known keys first
+            for key in ("jobs", "jobPostings", "requisitions", "results", "data", "items",
+                        "pageProps", "props"):
+                if key in data:
+                    result = self._find_jobs_in_json(data[key], depth + 1)
+                    if result:
+                        return result
+            # Broader search
+            for key, value in data.items():
+                if isinstance(value, (dict, list)):
+                    result = self._find_jobs_in_json(value, depth + 1)
+                    if result:
+                        return result
+        return []
+
+    def _fetch_desc_icims(self, job_url: str) -> str:
+        """Fetch description from an iCIMS job detail page."""
+        if not job_url:
+            return ""
+        resp = self._request(job_url)
+        if not resp:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Try JSON-LD first
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld_data = json.loads(script.string or "")
+                if isinstance(ld_data, dict) and ld_data.get("@type") == "JobPosting":
+                    desc = ld_data.get("description", "")
+                    if desc:
+                        text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                        return text[:5000]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Try common iCIMS description containers
+        for selector in [
+            {"class": re.compile(r"iCIMS.?desc|job.?desc|posting.?desc|description", re.I)},
+            {"class": re.compile(r"content|body|detail", re.I)},
+            {"id": re.compile(r"job.?desc|description|job.?detail", re.I)},
+        ]:
+            container = soup.find("div", selector)
+            if container and len(container.get_text(strip=True)) > 100:
+                return container.get_text(separator=" ", strip=True)[:5000]
+
+        return self._fetch_desc_generic(job_url)
+
+    # ========== TESLA ==========
+    def _scrape_tesla(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from Tesla's custom career site.
+        Tesla uses a JavaScript SPA with infinite scroll.
+        Tries embedded JSON data and potential API endpoints."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Extract search params from URL
+        from urllib.parse import parse_qs
+        query_params = parse_qs(parsed.query)
+        search_query = query_params.get("query", query_params.get("q", [""]))[0]
+        site_filter = query_params.get("site", [""])[0]
+
+        all_jobs = []
+        seen_ids = set()
+
+        # Strategy 1: Fetch the page and look for embedded __NEXT_DATA__ or similar
+        resp = self._request(url)
+        if resp:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Check for __NEXT_DATA__ (Next.js pattern)
+            next_data = soup.find("script", id="__NEXT_DATA__")
+            if next_data and next_data.string:
+                try:
+                    data = json.loads(next_data.string)
+                    jobs_data = self._find_jobs_in_json(data)
+                    for j in jobs_data:
+                        title = j.get("title", j.get("Title", j.get("name", "")))
+                        job_id = str(j.get("id", j.get("Id", j.get("req_id", j.get("jobId", "")))))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        location = j.get("location", j.get("Location", ""))
+                        if isinstance(location, dict):
+                            location = location.get("name", str(location))
+                        elif isinstance(location, list):
+                            location = ", ".join(str(l) for l in location)
+                        job_url = j.get("url", j.get("slug", ""))
+                        if job_url and not job_url.startswith("http"):
+                            job_url = f"{base_url}/careers/search/job/{job_url}"
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": job_url,
+                            "department": j.get("department", j.get("team", "")),
+                            "description": j.get("description", "")[:500] if j.get("description") else "",
+                        })
+                except (json.JSONDecodeError, TypeError) as e:
+                    logger.debug(f"  Tesla __NEXT_DATA__ parse error: {e}")
+
+            if all_jobs:
+                logger.info(f"  Tesla __NEXT_DATA__: found {len(all_jobs)} jobs")
+                return all_jobs
+
+            # Check for JSON-LD
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    ld_data = json.loads(script.string or "")
+                    items = []
+                    if isinstance(ld_data, list):
+                        items = ld_data
+                    elif isinstance(ld_data, dict):
+                        if ld_data.get("@type") == "JobPosting":
+                            items = [ld_data]
+                        elif "itemListElement" in ld_data:
+                            items = [i.get("item", i) for i in ld_data["itemListElement"]]
+
+                    for item in items:
+                        if item.get("@type") != "JobPosting":
+                            continue
+                        title = item.get("title", "")
+                        job_url = item.get("url", "")
+                        job_id = re.search(r'/(\d+)$', job_url)
+                        jid = job_id.group(1) if job_id else job_url
+                        if jid in seen_ids:
+                            continue
+                        seen_ids.add(jid)
+                        loc = item.get("jobLocation", {})
+                        if isinstance(loc, dict):
+                            addr = loc.get("address", {})
+                            location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                        else:
+                            location = ""
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": jid,
+                            "location": location,
+                            "url": job_url,
+                            "department": item.get("occupationalCategory", ""),
+                            "description": "",
+                        })
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            if all_jobs:
+                logger.info(f"  Tesla JSON-LD: found {len(all_jobs)} jobs")
+                return all_jobs
+
+            # Look for job links in the rendered HTML
+            for link in soup.find_all("a", href=True):
+                href = link.get("href", "")
+                text = link.get_text(strip=True)
+                # Tesla job URLs: /careers/search/job/internship-...-257514
+                job_match = re.search(r'/careers/search/job/([\w-]+-(\d+))', href)
+                if job_match and text and len(text) >= 5:
+                    job_id = job_match.group(2)
+                    if job_id in seen_ids:
+                        continue
+                    seen_ids.add(job_id)
+                    full_url = urljoin(base_url, href)
+                    all_jobs.append({
+                        "title": text,
+                        "job_id": job_id,
+                        "location": "",
+                        "url": full_url,
+                        "department": "",
+                        "description": "",
+                    })
+
+            if all_jobs:
+                logger.info(f"  Tesla HTML links: found {len(all_jobs)} jobs")
+                return all_jobs
+
+        # Strategy 2: Try potential Tesla API endpoints
+        api_candidates = [
+            f"{base_url}/careers/api/search",
+            f"{base_url}/careers/api/v1/jobs",
+            f"{base_url}/cua-api/apps/careers/state",
+            f"{base_url}/api/careers/search",
+        ]
+        for api_url in api_candidates:
+            try:
+                params = {}
+                if search_query:
+                    params["query"] = search_query
+                if site_filter:
+                    params["site"] = site_filter
+
+                # Try GET
+                resp = self.session.get(
+                    api_url, params=params, timeout=self.timeout,
+                    headers={"Accept": "application/json"}
+                )
+                if resp.status_code == 200 and resp.text.strip().startswith(("{", "[")):
+                    data = resp.json()
+                    jobs_data = self._find_jobs_in_json(data)
+                    for j in jobs_data:
+                        title = j.get("title", j.get("Title", j.get("name", "")))
+                        job_id = str(j.get("id", j.get("Id", j.get("req_id", ""))))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        location = j.get("location", j.get("Location", ""))
+                        if isinstance(location, dict):
+                            location = location.get("name", str(location))
+                        job_url = j.get("url", j.get("slug", ""))
+                        if job_url and not job_url.startswith("http"):
+                            job_url = f"{base_url}/careers/search/job/{job_url}"
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": job_url,
+                            "department": j.get("department", j.get("team", "")),
+                            "description": "",
+                        })
+                    if all_jobs:
+                        logger.info(f"  Tesla API ({api_url}): found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+            # Try POST
+            try:
+                payload = {"query": search_query, "site": site_filter, "offset": 0, "count": 100}
+                resp = self.session.post(
+                    api_url, json=payload, timeout=self.timeout,
+                    headers={"Accept": "application/json", "Content-Type": "application/json"}
+                )
+                if resp.status_code == 200 and resp.text.strip().startswith(("{", "[")):
+                    data = resp.json()
+                    jobs_data = self._find_jobs_in_json(data)
+                    for j in jobs_data:
+                        title = j.get("title", j.get("Title", ""))
+                        job_id = str(j.get("id", j.get("Id", "")))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        location = j.get("location", "")
+                        if isinstance(location, dict):
+                            location = location.get("name", str(location))
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": j.get("url", ""),
+                            "department": j.get("department", ""),
+                            "description": "",
+                        })
+                    if all_jobs:
+                        logger.info(f"  Tesla API POST ({api_url}): found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+        # Strategy 3: Try sitemap
+        for sitemap_path in ["/sitemap.xml", "/careers/sitemap.xml"]:
+            sitemap_url = f"{base_url}{sitemap_path}"
+            try:
+                resp = self.session.get(sitemap_url, timeout=self.timeout,
+                                        headers={"Accept": "application/xml, text/xml"})
+                if resp.status_code == 200:
+                    # Could be a sitemap index
+                    if "<sitemapindex" in resp.text:
+                        idx_soup = BeautifulSoup(resp.text, "html.parser")
+                        for loc in idx_soup.find_all("loc"):
+                            child_url = loc.get_text(strip=True)
+                            if "career" in child_url.lower() or "job" in child_url.lower():
+                                child_resp = self.session.get(child_url, timeout=self.timeout)
+                                if child_resp.status_code == 200 and "<urlset" in child_resp.text:
+                                    resp = child_resp
+                                    break
+
+                    if "<urlset" in resp.text:
+                        soup = BeautifulSoup(resp.text, "html.parser")
+                        for loc in soup.find_all("loc"):
+                            loc_url = loc.get_text(strip=True)
+                            job_match = re.search(r'/careers/search/job/([\w-]+-(\d+))', loc_url)
+                            if job_match:
+                                job_id = job_match.group(2)
+                                if job_id in seen_ids:
+                                    continue
+                                seen_ids.add(job_id)
+                                slug = job_match.group(1)
+                                # Remove trailing ID from slug for title
+                                title_slug = re.sub(r'-\d+$', '', slug)
+                                title = title_slug.replace('-', ' ').title()
+                                all_jobs.append({
+                                    "title": title,
+                                    "job_id": job_id,
+                                    "location": "",
+                                    "url": loc_url,
+                                    "department": "",
+                                    "description": "",
+                                })
+
+                        if all_jobs:
+                            logger.info(f"  Tesla sitemap: found {len(all_jobs)} jobs")
+                            return all_jobs
+            except Exception:
+                continue
+
+        logger.warning(
+            f"Tesla: could not scrape {company}. Tesla's career site uses JavaScript rendering "
+            f"with infinite scroll. Consider using browser automation (Selenium/Playwright) "
+            f"or a third-party job aggregation service."
+        )
+        return self._scrape_generic(company, url)
+
+    def _fetch_desc_tesla(self, job_url: str) -> str:
+        """Fetch description from a Tesla job detail page."""
+        if not job_url:
+            return ""
+        resp = self._request(job_url)
+        if not resp:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Try JSON-LD first
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld_data = json.loads(script.string or "")
+                if isinstance(ld_data, dict) and ld_data.get("@type") == "JobPosting":
+                    desc = ld_data.get("description", "")
+                    if desc:
+                        text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                        return text[:5000]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Try __NEXT_DATA__
+        next_data = soup.find("script", id="__NEXT_DATA__")
+        if next_data and next_data.string:
+            try:
+                data = json.loads(next_data.string)
+                jobs = self._find_jobs_in_json(data)
+                if jobs:
+                    desc = jobs[0].get("description", jobs[0].get("Description", ""))
+                    if desc:
+                        text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                        return text[:5000]
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        # Try common containers
+        for selector in [
+            {"class": re.compile(r"job.?desc|posting.?body|description", re.I)},
+            {"class": re.compile(r"content|body|detail", re.I)},
+        ]:
+            container = soup.find("div", selector)
+            if container and len(container.get_text(strip=True)) > 100:
+                return container.get_text(separator=" ", strip=True)[:5000]
+
+        return self._fetch_desc_generic(job_url)
 
     # ========== GENERIC HTML SCRAPER ==========
     def _scrape_generic(self, company: str, url: str) -> List[Dict]:
