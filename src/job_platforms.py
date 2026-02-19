@@ -1,7 +1,7 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
 Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo,
-Oracle HCM Cloud, Jobvite/TTC, iCIMS, Tesla, and generic HTML.
+Oracle HCM Cloud, Jobvite/TTC, iCIMS, Tesla, Eightfold.ai, and generic HTML.
 """
 
 import re
@@ -51,6 +51,9 @@ def detect_platform(url: str) -> str:
     # Tesla custom career site
     elif "tesla.com/careers" in url_lower:
         return "tesla"
+    # Eightfold.ai — explicit subdomain (e.g., zebra.eightfold.ai/careers)
+    elif "eightfold.ai" in url_lower:
+        return "eightfold"
     else:
         return "generic"
 
@@ -110,6 +113,16 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
             return parsed.hostname
         elif platform == "tesla":
             return "tesla"
+        elif platform == "eightfold":
+            # https://zebra.eightfold.ai/careers → "zebra"
+            # https://careers.qualcomm.com/careers → "careers.qualcomm.com"
+            if "eightfold.ai" in url:
+                match = re.search(r'([\w-]+)\.eightfold\.ai', url)
+                return match.group(1) if match else None
+            else:
+                # Custom domain — use the full hostname as identifier
+                parsed = urlparse(url)
+                return parsed.hostname
     except Exception:
         pass
     return None
@@ -149,6 +162,11 @@ class JobScraper:
     def scrape_company(self, company_name: str, career_url: str) -> List[Dict]:
         """Scrape jobs from a company career page. Returns list of job dicts."""
         platform = detect_platform(career_url)
+
+        # For "generic" URLs, probe the HTML to detect eightfold.ai custom domains
+        if platform == "generic":
+            platform = self._probe_for_eightfold(career_url, platform)
+
         logger.info(f"Scraping {company_name} [{platform}]: {career_url}")
 
         try:
@@ -176,6 +194,8 @@ class JobScraper:
                 jobs = self._scrape_icims(company_name, career_url)
             elif platform == "tesla":
                 jobs = self._scrape_tesla(company_name, career_url)
+            elif platform == "eightfold":
+                jobs = self._scrape_eightfold(company_name, career_url)
             else:
                 jobs = self._scrape_generic(company_name, career_url)
         except Exception as e:
@@ -228,6 +248,8 @@ class JobScraper:
                 return self._fetch_desc_icims(job_url)
             elif platform == "tesla":
                 return self._fetch_desc_tesla(job_url)
+            elif platform == "eightfold":
+                return self._fetch_desc_eightfold(job)
             else:
                 return self._fetch_desc_generic(job_url)
         except Exception as e:
@@ -1901,6 +1923,339 @@ class JobScraper:
             if container and len(container.get_text(strip=True)) > 100:
                 return container.get_text(separator=" ", strip=True)[:5000]
 
+        return self._fetch_desc_generic(job_url)
+
+    # ========== EIGHTFOLD.AI ==========
+    def _probe_for_eightfold(self, url: str, current_platform: str) -> str:
+        """Probe a 'generic' URL's HTML to detect if it's an Eightfold.ai career site.
+        Custom-domain Eightfold sites (e.g., careers.qualcomm.com) don't have
+        'eightfold' in the URL, but their HTML contains telltale markers.
+        Returns 'eightfold' if detected, otherwise the original platform string."""
+        try:
+            resp = self.session.get(url, timeout=self.timeout, headers={
+                "Accept": "text/html,application/xhtml+xml",
+            })
+            if resp.status_code != 200:
+                return current_platform
+
+            html_lower = resp.text[:20000].lower()  # Only scan first 20KB
+
+            # Check for eightfold fingerprints in the HTML shell
+            eightfold_markers = [
+                "eightfold.ai",
+                "static.eightfold.ai",
+                "eightfoldapi.com",
+                "powered by eightfold",
+                '"eightfold"',
+                "eightfold_",
+            ]
+            for marker in eightfold_markers:
+                if marker in html_lower:
+                    logger.info(f"  Detected Eightfold.ai (marker: '{marker}') on custom domain: {url}")
+                    return "eightfold"
+
+        except Exception as e:
+            logger.debug(f"  Eightfold probe failed for {url}: {e}")
+
+        return current_platform
+
+    def _scrape_eightfold(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from an Eightfold.ai career site.
+
+        Uses the public GET /api/apply/v2/jobs endpoint that powers the
+        career page SPA.  No authentication required.
+
+        Pagination params:
+          num   – page size (max ~100)
+          start – offset
+
+        Response JSON keys:
+          positions – list of job objects
+          count     – total number of positions
+        """
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        api_url = f"{base_url}/api/apply/v2/jobs"
+
+        all_jobs: List[Dict] = []
+        page_size = 100
+        max_pages = 30  # 30 × 100 = 3000 jobs cap
+
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": self.session.headers.get("User-Agent", "Mozilla/5.0"),
+            "Referer": url,
+        }
+
+        try:
+            # First page
+            resp = self.session.get(
+                api_url,
+                params={"num": page_size, "start": 0},
+                timeout=self.timeout,
+                headers=headers,
+            )
+
+            if resp.status_code != 200:
+                logger.warning(f"  Eightfold API returned {resp.status_code} for {api_url}")
+                return self._scrape_eightfold_fallback(company, url, base_url)
+
+            data = resp.json()
+            if not isinstance(data, dict) or "positions" not in data:
+                logger.warning(f"  Eightfold API response missing 'positions' key")
+                return self._scrape_eightfold_fallback(company, url, base_url)
+
+            positions = data["positions"]
+            total = data.get("count", 0) or 0
+
+            for p in positions:
+                job = self._parse_eightfold_job(p, base_url)
+                if job:
+                    all_jobs.append(job)
+
+            logger.info(f"  Eightfold: page 1 returned {len(positions)} positions (total={total})")
+
+            # Paginate through remaining pages
+            fetched = len(positions)
+            for page in range(1, max_pages):
+                if fetched >= total:
+                    break
+
+                start = page * page_size
+                time.sleep(1)
+
+                try:
+                    page_resp = self.session.get(
+                        api_url,
+                        params={"num": page_size, "start": start},
+                        timeout=self.timeout,
+                        headers=headers,
+                    )
+                    if page_resp.status_code != 200:
+                        logger.debug(f"  Eightfold pagination stopped at page {page+1} (status {page_resp.status_code})")
+                        break
+
+                    page_data = page_resp.json()
+                    page_positions = page_data.get("positions", [])
+
+                    if not page_positions:
+                        break
+
+                    for p in page_positions:
+                        job = self._parse_eightfold_job(p, base_url)
+                        if job:
+                            all_jobs.append(job)
+
+                    fetched += len(page_positions)
+                    logger.debug(f"  Eightfold page {page+1}: {len(page_positions)} positions (fetched {fetched}/{total})")
+
+                    if len(page_positions) < page_size:
+                        break
+
+                except Exception as e:
+                    logger.debug(f"  Eightfold pagination error at page {page+1}: {e}")
+                    break
+
+            logger.info(f"  Eightfold: scraped {len(all_jobs)} jobs from {company}")
+            return all_jobs
+
+        except (json.JSONDecodeError, requests.RequestException) as e:
+            logger.warning(f"  Eightfold API request failed: {e}")
+            return self._scrape_eightfold_fallback(company, url, base_url)
+
+    def _scrape_eightfold_fallback(self, company: str, url: str, base_url: str) -> List[Dict]:
+        """Fallback: try to find jobs embedded in the HTML page."""
+        all_jobs: List[Dict] = []
+        try:
+            resp = self._request(url)
+            if resp and resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+
+                # Check for embedded JSON in script tags
+                for script in soup.find_all("script", type="application/json"):
+                    try:
+                        script_data = json.loads(script.string or "")
+                        embedded_jobs = self._find_eightfold_jobs_in_json(script_data)
+                        if embedded_jobs:
+                            for j in embedded_jobs:
+                                job = self._parse_eightfold_job(j, base_url)
+                                if job:
+                                    all_jobs.append(job)
+                            if all_jobs:
+                                logger.info(f"  Eightfold fallback: found {len(all_jobs)} jobs in embedded JSON")
+                                return all_jobs
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                # Check __NEXT_DATA__
+                next_data = soup.find("script", id="__NEXT_DATA__")
+                if next_data and next_data.string:
+                    try:
+                        data = json.loads(next_data.string)
+                        embedded_jobs = self._find_eightfold_jobs_in_json(data)
+                        if embedded_jobs:
+                            for j in embedded_jobs:
+                                job = self._parse_eightfold_job(j, base_url)
+                                if job:
+                                    all_jobs.append(job)
+                            if all_jobs:
+                                logger.info(f"  Eightfold fallback: found {len(all_jobs)} jobs in __NEXT_DATA__")
+                                return all_jobs
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
+        except Exception as e:
+            logger.debug(f"  Eightfold fallback extraction failed: {e}")
+
+        logger.warning(f"  Eightfold: could not scrape {company} at {url}; falling back to generic scraper")
+        return self._scrape_generic(company, url)
+
+
+    def _parse_eightfold_job(self, j: dict, base_url: str) -> Optional[Dict]:
+        """Parse a single job object from Eightfold API response."""
+        if not isinstance(j, dict):
+            return None
+
+        # Eightfold job objects may use various field names
+        title = (
+            j.get("name", "")
+            or j.get("title", "")
+            or j.get("requisitionTitle", "")
+            or j.get("position_name", "")
+        )
+        if not title:
+            return None
+
+        job_id = str(
+            j.get("id", "")
+            or j.get("requisitionId", "")
+            or j.get("position_id", "")
+            or j.get("eightfold_id", "")
+        )
+
+        # Location handling — may be a string or nested object
+        location = ""
+        loc_data = j.get("location", j.get("locations", ""))
+        if isinstance(loc_data, str):
+            location = loc_data
+        elif isinstance(loc_data, dict):
+            location = loc_data.get("name", loc_data.get("city", ""))
+        elif isinstance(loc_data, list) and loc_data:
+            parts = []
+            for loc in loc_data:
+                if isinstance(loc, str):
+                    parts.append(loc)
+                elif isinstance(loc, dict):
+                    parts.append(loc.get("name", loc.get("city", "")))
+            location = "; ".join(filter(None, parts))
+
+        # Job URL — may be a full URL or a relative path
+        job_url = j.get("url", j.get("apply_url", j.get("canonicalPositionUrl", "")))
+        if job_url and not job_url.startswith("http"):
+            job_url = f"{base_url}{job_url}" if job_url.startswith("/") else f"{base_url}/{job_url}"
+
+        department = (
+            j.get("department", "")
+            or j.get("departmentName", "")
+            or j.get("category", "")
+        )
+        if isinstance(department, dict):
+            department = department.get("name", department.get("label", ""))
+
+        description = j.get("description", j.get("descriptionPlain", ""))
+        if description and len(description) > 500:
+            # Strip HTML if present
+            if "<" in description:
+                description = BeautifulSoup(description, "html.parser").get_text(separator=" ", strip=True)
+            description = description[:500]
+
+        return {
+            "title": title,
+            "job_id": job_id,
+            "location": location,
+            "url": job_url or "",
+            "department": department if isinstance(department, str) else "",
+            "description": description or "",
+        }
+
+    def _find_eightfold_jobs_in_json(self, data, depth: int = 0) -> Optional[list]:
+        """Recursively search nested JSON for a list that looks like job postings."""
+        if depth > 8:
+            return None
+
+        if isinstance(data, list) and len(data) > 0:
+            # Check if items look like job objects
+            sample = data[0] if isinstance(data[0], dict) else None
+            if sample:
+                job_keys = {"title", "name", "requisitionTitle", "position_name"}
+                if any(k in sample for k in job_keys):
+                    return data
+
+        if isinstance(data, dict):
+            # Check known container keys first
+            for key in ["positions", "jobs", "results", "postings", "requisitions",
+                        "jobPostings", "openPositions"]:
+                if key in data and isinstance(data[key], list):
+                    result = self._find_eightfold_jobs_in_json(data[key], depth + 1)
+                    if result:
+                        return result
+
+            # Recurse into all dict values
+            for v in data.values():
+                if isinstance(v, (dict, list)):
+                    result = self._find_eightfold_jobs_in_json(v, depth + 1)
+                    if result:
+                        return result
+
+        return None
+
+    def _fetch_desc_eightfold(self, job: Dict) -> str:
+        """Fetch full job description from an Eightfold.ai job posting."""
+        job_url = job.get("url", "")
+        job_id = job.get("job_id", "")
+        source_url = job.get("source_url", "")
+
+        if not job_url and not job_id:
+            return ""
+
+        # Strategy 1: Try the job detail API
+        if source_url and job_id:
+            parsed = urlparse(source_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+            detail_paths = [
+                f"/api/apply/v2/jobs/{job_id}",
+                f"/api/apply/v1/jobs/{job_id}",
+            ]
+            headers = {
+                "Accept": "application/json",
+                "Referer": source_url,
+                "Origin": base_url,
+            }
+
+            for detail_path in detail_paths:
+                try:
+                    resp = self.session.get(
+                        f"{base_url}{detail_path}",
+                        timeout=self.timeout,
+                        headers=headers,
+                    )
+                    if resp.status_code == 200:
+                        content_type = resp.headers.get("Content-Type", "")
+                        if "json" in content_type or resp.text.strip().startswith(("{", "[")):
+                            data = resp.json()
+                            desc = (
+                                data.get("description", "")
+                                or data.get("descriptionHtml", "")
+                                or data.get("jobDescription", "")
+                            )
+                            if desc:
+                                text = BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)
+                                return text[:5000]
+                except Exception:
+                    continue
+
+        # Strategy 2: Fetch the job page HTML directly
         return self._fetch_desc_generic(job_url)
 
     # ========== GENERIC HTML SCRAPER ==========
