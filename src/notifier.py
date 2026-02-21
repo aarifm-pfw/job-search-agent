@@ -33,6 +33,7 @@ class Notifier:
         "jobvite": ("\U0001f4cc", "Jobvite"),
         "icims": ("\U0001f4e1", "iCIMS"),
         "tesla": ("\u26a1", "Tesla Careers"),
+        "eightfold": ("\U0001f52e", "Eightfold"),
         "generic": ("\U0001f310", "Other / Generic"),
     }
 
@@ -49,10 +50,11 @@ class Notifier:
         "jobvite": ("#1abc9c", "\U0001f4cc Jobvite"),
         "icims": ("#2c3e50", "\U0001f4e1 iCIMS"),
         "tesla": ("#cc0000", "\u26a1 Tesla Careers"),
+        "eightfold": ("#6c5ce7", "\U0001f52e Eightfold"),
         "generic": ("#7f8c8d", "\U0001f310 Other"),
     }
 
-    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "tesla", "generic"]
+    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "tesla", "eightfold", "generic"]
 
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
@@ -116,7 +118,9 @@ class Notifier:
             print(f"  {cat_icon} {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})")
             print(f"{'='*120}")
 
-            for platform in self.PLATFORM_ORDER:
+            # Include platforms in defined order, then any extras not in the list
+            ordered_platforms = list(self.PLATFORM_ORDER) + [p for p in platforms if p not in self.PLATFORM_ORDER]
+            for platform in ordered_platforms:
                 if platform not in platforms:
                     continue
                 companies = platforms[platform]
@@ -204,7 +208,9 @@ class Notifier:
                     {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})
                 </div>"""
 
-            for platform in self.PLATFORM_ORDER:
+            # Include platforms in defined order, then any extras not in the list
+            ordered_platforms = list(self.PLATFORM_ORDER) + [p for p in platforms if p not in self.PLATFORM_ORDER]
+            for platform in ordered_platforms:
                 if platform not in platforms:
                     continue
                 companies = platforms[platform]
