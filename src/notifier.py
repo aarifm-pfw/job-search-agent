@@ -139,7 +139,7 @@ class Notifier:
                         location = (job.get('location') or 'N/A')[:18]
                         score = job.get('relevance_score', 0)
                         visa = WARN if job.get('visa_unverified') else CHECK
-                        link = job.get('url', '')[:45] or DASH
+                        link = (job.get('source_url', job.get('url', '')) if job.get('platform') == 'workday' else job.get('url', ''))[:45] or DASH
                         print(f"      {i:<5} {title:<40} {job_id:<15} {location:<20} {score:<6} {visa:<6} {link}")
 
         print(f"\n{'='*120}")
@@ -225,7 +225,7 @@ class Notifier:
                         score = job.get('relevance_score', 0)
                         score_color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
                         visa_icon = '<span style="color:#e74c3c;" title="Visa status unverified">\u26a0\ufe0f</span>' if job.get('visa_unverified') else '<span style="color:#27ae60;" title="Visa keywords checked">\u2705</span>'
-                        job_url = job.get('url', '')
+                        job_url = job.get('source_url', job.get('url', '')) if job.get('platform') == 'workday' else job.get('url', '')
                         title_cell = f'<a href="{job_url}" style="color:#2c3e50;text-decoration:none;">{job["title"]}</a>' if job_url else job['title']
                         # Show job_id only if it's a short identifier (not a full URL)
                         raw_id = job.get('job_id', '')
@@ -299,7 +299,7 @@ class Notifier:
                 f"*{i}. {self._tg_escape(job['title'])}*\n"
                 f"\U0001f3e2 {self._tg_escape(job['company'])}  \U0001f4cd {self._tg_escape(job.get('location','N/A'))}\n"
                 f"\U0001f4ca Score: {job.get('relevance_score',0)}\n"
-                f"[Apply \u2192]({job.get('url','#')})\n\n"
+                f"[Apply \u2192]({job.get('source_url', job.get('url', '#')) if job.get('platform') == 'workday' else job.get('url', '#')})\n\n"
             )
             if len(current) + len(entry) > 3800:
                 messages.append(current)
@@ -347,7 +347,7 @@ class Notifier:
             color = 0x27ae60 if score >= 20 else 0xf39c12 if score >= 10 else 0x95a5a6
             embeds.append({
                 "title": job["title"],
-                "url": job.get("url", ""),
+                "url": job.get("source_url", job.get("url", "")) if job.get("platform") == "workday" else job.get("url", ""),
                 "color": color,
                 "fields": [
                     {"name": "\U0001f3e2 Company", "value": job["company"], "inline": True},
@@ -480,9 +480,10 @@ class Notifier:
         for j in top[:10]:
             score = j.get('relevance_score', 0)
             color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
+            top_job_url = j.get('source_url', j.get('url', '#')) if j.get('platform') == 'workday' else j.get('url', '#')
             top_rows += f"""<tr>
                 <td style='padding:8px 12px;border-bottom:1px solid #eee;'>
-                    <a href="{j.get('url','#')}" style="color:#2c3e50;text-decoration:none;"><strong>{j['title']}</strong></a><br>
+                    <a href="{top_job_url}" style="color:#2c3e50;text-decoration:none;"><strong>{j['title']}</strong></a><br>
                     <span style="color:#7f8c8d;">\U0001f3e2 {j['company']} | \U0001f4cd {j.get('location','N/A')}</span>
                 </td>
                 <td style='padding:8px;text-align:center;border-bottom:1px solid #eee;'>
