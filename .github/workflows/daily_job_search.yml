@@ -60,6 +60,8 @@ jobs:
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
           RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+          # Per-recipient category filtering (optional JSON, see config.yaml for format)
+          RECIPIENT_CATEGORIES: ${{ secrets.RECIPIENT_CATEGORIES }}
           # --- For Telegram (uncomment if using Telegram instead) ---
           # TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           # TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}

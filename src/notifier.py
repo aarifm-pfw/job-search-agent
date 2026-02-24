@@ -59,19 +59,27 @@ class Notifier:
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
         "Robotics": "\U0001f916",       # 🤖
+        "Health": "\U0001f3e5",          # 🏥
     }
-    CATEGORY_ORDER = ["Semiconductor", "Robotics"]  # Listed categories first, then others alphabetically
+    CATEGORY_ORDER = ["Semiconductor", "Robotics", "Health"]  # Listed categories first, then others alphabetically
 
     def __init__(self, config: dict):
         notif_cfg = config.get("notification", {})
         self.method = notif_cfg.get("method", "console")
         self.config = notif_cfg
+        # Per-recipient category filtering
+        # Format: [{"email": "a@b.com", "categories": ["Robotics", "Health"]}, ...]
+        self.recipients = notif_cfg.get("recipients", [])
 
     def send(self, new_jobs: List[Dict], stats: Dict) -> bool:
         """Send notification with new job matches."""
         if not new_jobs:
             logger.info("No new jobs to notify about.")
             return True
+
+        # Per-recipient category filtering (email only)
+        if self.method == "email" and self.recipients:
+            return self._send_per_recipient(new_jobs, stats)
 
         if self.method == "email":
             return self._send_email(new_jobs, stats)
@@ -81,6 +89,33 @@ class Notifier:
             return self._send_discord(new_jobs, stats)
         else:
             return self._send_console(new_jobs, stats)
+
+    def _send_per_recipient(self, all_jobs: List[Dict], stats: Dict) -> bool:
+        """Send category-filtered emails to each recipient."""
+        any_sent = False
+        for recipient in self.recipients:
+            email = recipient.get("email", "")
+            categories = recipient.get("categories", [])
+
+            if not email:
+                continue
+
+            # Filter jobs by category (empty categories list = all jobs)
+            if categories:
+                filtered = [j for j in all_jobs if j.get("category", "Other") in categories]
+            else:
+                filtered = all_jobs
+
+            if not filtered:
+                logger.info(f"No matching jobs for {email} (categories: {categories})")
+                continue
+
+            logger.info(f"Sending {len(filtered)} jobs to {email} (categories: {categories})")
+            success = self._send_email(filtered, stats, recipient_override=email)
+            if success:
+                any_sent = True
+
+        return any_sent
 
     def _get_sorted_categories(self, categories):
         """Return categories in defined order: CATEGORY_ORDER first, then others alphabetically."""
@@ -156,11 +191,14 @@ class Notifier:
         return True
 
     # ==================== EMAIL ====================
-    def _send_email(self, jobs: List[Dict], stats: Dict) -> bool:
+    def _send_email(self, jobs: List[Dict], stats: Dict, recipient_override: str = "") -> bool:
         email_cfg = self.config.get("email", {})
         try:
-            # Support comma-separated recipient list
-            recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
+            # Use override (per-recipient mode) or fall back to config
+            if recipient_override:
+                recipients = [recipient_override]
+            else:
+                recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
 
             msg = MIMEMultipart("alternative")
             msg["Subject"] = f"\U0001f916 {len(jobs)} New Job Match{'es' if len(jobs) > 1 else ''} \u2014 {datetime.now().strftime('%b %d')}"
@@ -185,6 +223,7 @@ class Notifier:
         CATEGORY_COLORS = {
             "Semiconductor": "#e74c3c",
             "Robotics": "#2980b9",
+            "Health": "#27ae60",
         }
 
         # Build 3-level grouping: category -> platform -> company
