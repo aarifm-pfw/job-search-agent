@@ -1,7 +1,7 @@
 """
 Job platform scrapers - extract job listings from various career page platforms.
 Supports: Greenhouse, Lever, Workday, SmartRecruiters, Recruitee, Taleo,
-Oracle HCM Cloud, Jobvite/TTC, iCIMS, Tesla, and generic HTML.
+Oracle HCM Cloud, Jobvite/TTC, iCIMS, Phenom People, Tesla, and generic HTML.
 """
 
 import re
@@ -48,6 +48,11 @@ def detect_platform(url: str) -> str:
           or "createnewalert" in url_lower
           or "optionsfacetsdd_" in url_lower):
         return "icims"
+    # Phenom People career sites: /search-results, /job-search-results, /search-jobs
+    elif (re.search(r'/(?:global|us|en|uk|in)/(?:en|de|fr|es)/search-results', url_lower)
+          or "/job-search-results" in url_lower
+          or re.search(r'/en/search-jobs', url_lower)):
+        return "phenom"
     # Tesla custom career site
     elif "tesla.com/careers" in url_lower:
         return "tesla"
@@ -106,6 +111,10 @@ def extract_company_slug(url: str, platform: str) -> Optional[str]:
         elif platform == "icims":
             # Custom domain iCIMS: https://careers.tsmc.com/en_US/careers/SearchJobs
             # or https://jobs-company.icims.com/...
+            parsed = urlparse(url)
+            return parsed.hostname
+        elif platform == "phenom":
+            # Phenom career sites use custom domains
             parsed = urlparse(url)
             return parsed.hostname
         elif platform == "tesla":
@@ -174,6 +183,8 @@ class JobScraper:
                 jobs = self._scrape_jobvite(company_name, career_url)
             elif platform == "icims":
                 jobs = self._scrape_icims(company_name, career_url)
+            elif platform == "phenom":
+                jobs = self._scrape_phenom(company_name, career_url)
             elif platform == "tesla":
                 jobs = self._scrape_tesla(company_name, career_url)
             else:
@@ -226,6 +237,8 @@ class JobScraper:
                 return self._fetch_desc_jobvite(job_url)
             elif platform == "icims":
                 return self._fetch_desc_icims(job_url)
+            elif platform == "phenom":
+                return self._fetch_desc_phenom(job)
             elif platform == "tesla":
                 return self._fetch_desc_tesla(job_url)
             else:
@@ -1587,6 +1600,285 @@ class JobScraper:
             {"class": re.compile(r"iCIMS.?desc|job.?desc|posting.?desc|description", re.I)},
             {"class": re.compile(r"content|body|detail", re.I)},
             {"id": re.compile(r"job.?desc|description|job.?detail", re.I)},
+        ]:
+            container = soup.find("div", selector)
+            if container and len(container.get_text(strip=True)) > 100:
+                return container.get_text(separator=" ", strip=True)[:5000]
+
+        return self._fetch_desc_generic(job_url)
+
+    # ========== PHENOM PEOPLE ==========
+    # Workday backend URL patterns for known Phenom-fronted companies.
+    # Phenom is a JS SPA layer; the underlying ATS (usually Workday) has a
+    # public JSON API that the existing _scrape_workday already supports.
+    PHENOM_WORKDAY_BACKENDS = {
+        "careers.humana.com": "https://humana.wd5.myworkdayjobs.com/Humana_External_Career_Site",
+        "careers.siemens-healthineers.com": "https://onehealthineers.wd3.myworkdayjobs.com/SHSJB",
+        "jobs.bd.com": "https://bdx.wd1.myworkdayjobs.com/EXTERNAL_CAREER_SITE_USA",
+    }
+
+    def _scrape_phenom(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from Phenom People career sites.
+        Phenom is a JS SPA that wraps an underlying ATS (usually Workday or Taleo).
+        Strategy: try known Workday backend → Phenom API patterns → HTML/sitemap."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        hostname = parsed.hostname or ""
+
+        all_jobs = []
+        seen_ids = set()
+
+        # Strategy 1: Use known Workday backend URL if available
+        workday_url = self.PHENOM_WORKDAY_BACKENDS.get(hostname)
+        if workday_url:
+            logger.info(f"  Phenom → using Workday backend for {company}")
+            jobs = self._scrape_workday(company, workday_url)
+            if jobs:
+                # Tag with Workday backend info for description fetching
+                for j in jobs:
+                    j["_phenom_workday_url"] = workday_url
+                return jobs
+
+        # Strategy 2: Try common Phenom internal API endpoint patterns
+        api_patterns = [
+            (f"{base_url}/api/apply/v2/jobs/search", "POST", {
+                "appliedFacets": {}, "limit": 40, "offset": 0, "searchText": ""
+            }),
+            (f"{base_url}/api/jobs", "GET", {"limit": 40, "offset": 0}),
+            (f"{base_url}/api/jobs/search", "POST", {
+                "query": "", "limit": 40, "offset": 0
+            }),
+            (f"{base_url}/api/apply/v2/jobs", "GET", {
+                "domain": hostname, "start": 0, "num": 40, "sort_by": "relevance"
+            }),
+        ]
+
+        for api_url, method, payload in api_patterns:
+            try:
+                headers = {"Accept": "application/json", "Content-Type": "application/json"}
+                if method == "POST":
+                    resp = self.session.post(api_url, json=payload, timeout=self.timeout, headers=headers)
+                else:
+                    resp = self.session.get(api_url, params=payload, timeout=self.timeout, headers=headers)
+
+                if resp.status_code == 200 and resp.text.strip().startswith(("{", "[")):
+                    data = resp.json()
+                    # Phenom API returns {"status": ..., "data": [...], "totalRecordsCount": N}
+                    job_list = data.get("data", data.get("jobs", data.get("jobPostings", data.get("results", []))))
+                    if isinstance(data, list):
+                        job_list = data
+
+                    for j in job_list:
+                        title = j.get("title", j.get("Title", j.get("name", "")))
+                        job_id = str(j.get("id", j.get("jobId", j.get("Id", j.get("requisitionId", "")))))
+                        if not title or job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+
+                        # Handle Phenom multiLocation
+                        location = ""
+                        multi_loc = j.get("multiLocation", [])
+                        if multi_loc and isinstance(multi_loc, list):
+                            loc = multi_loc[0] if multi_loc else {}
+                            location = loc.get("cityState", loc.get("locationDisplay", loc.get("city", "")))
+                        if not location:
+                            location = j.get("location", j.get("Location", ""))
+                            if isinstance(location, dict):
+                                location = location.get("name", location.get("city", str(location)))
+
+                        job_url = j.get("applyUrl", j.get("url", j.get("slug", "")))
+                        if job_url and not job_url.startswith("http"):
+                            job_url = f"{base_url}{job_url}" if job_url.startswith("/") else f"{base_url}/{job_url}"
+
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": str(location) if location else "",
+                            "url": job_url,
+                            "department": j.get("category", j.get("department", j.get("Department", ""))),
+                            "description": (j.get("description", "") or "")[:500],
+                        })
+
+                    if all_jobs:
+                        logger.info(f"  Phenom API ({api_url}): found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+        # Strategy 3: Fetch the page and look for embedded JSON data
+        resp = self._request(url)
+        if resp:
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Check for JSON-LD
+            for script in soup.find_all("script", type="application/ld+json"):
+                try:
+                    ld_data = json.loads(script.string or "")
+                    items = []
+                    if isinstance(ld_data, list):
+                        items = ld_data
+                    elif isinstance(ld_data, dict):
+                        if ld_data.get("@type") == "JobPosting":
+                            items = [ld_data]
+                        elif "itemListElement" in ld_data:
+                            items = [i.get("item", i) for i in ld_data["itemListElement"]]
+
+                    for item in items:
+                        if item.get("@type") != "JobPosting":
+                            continue
+                        title = item.get("title", "")
+                        job_url = item.get("url", "")
+                        jid = item.get("identifier", {})
+                        if isinstance(jid, dict):
+                            job_id = str(jid.get("value", job_url))
+                        else:
+                            job_id = str(jid) if jid else job_url
+                        if job_id in seen_ids:
+                            continue
+                        seen_ids.add(job_id)
+                        loc = item.get("jobLocation", {})
+                        if isinstance(loc, dict):
+                            addr = loc.get("address", {})
+                            location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                        elif isinstance(loc, list) and loc:
+                            addr = loc[0].get("address", {})
+                            location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                        else:
+                            location = ""
+                        all_jobs.append({
+                            "title": title,
+                            "job_id": job_id,
+                            "location": location,
+                            "url": job_url or url,
+                            "department": item.get("occupationalCategory", ""),
+                            "description": "",
+                        })
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+            if all_jobs:
+                logger.info(f"  Phenom JSON-LD: found {len(all_jobs)} jobs")
+                return all_jobs
+
+            # Check for embedded __NEXT_DATA__ or similar
+            for script in soup.find_all("script"):
+                script_text = script.string or ""
+                for pattern in [r'__NEXT_DATA__\s*=\s*({.*?})\s*;',
+                                r'window\.__INITIAL_STATE__\s*=\s*({.*?})\s*;',
+                                r'window\.phenomtrack\s*=\s*({.*?})\s*;']:
+                    match = re.search(pattern, script_text, re.DOTALL)
+                    if match:
+                        try:
+                            data = json.loads(match.group(1))
+                            jobs_data = self._find_jobs_in_json(data)
+                            for j in jobs_data:
+                                title = j.get("title", j.get("Title", ""))
+                                job_id = str(j.get("id", j.get("Id", j.get("jobId", ""))))
+                                if not title or job_id in seen_ids:
+                                    continue
+                                seen_ids.add(job_id)
+                                location = j.get("location", j.get("Location", ""))
+                                if isinstance(location, dict):
+                                    location = location.get("name", str(location))
+                                all_jobs.append({
+                                    "title": title,
+                                    "job_id": job_id,
+                                    "location": str(location) if location else "",
+                                    "url": j.get("url", j.get("applyUrl", "")),
+                                    "department": j.get("department", j.get("category", "")),
+                                    "description": "",
+                                })
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+
+            if all_jobs:
+                logger.info(f"  Phenom embedded JSON: found {len(all_jobs)} jobs")
+                return all_jobs
+
+        # Strategy 4: Try sitemap
+        for spath in ["/sitemap.xml", "/sitemap-jobs.xml"]:
+            sitemap_url = f"{base_url}{spath}"
+            try:
+                resp = self.session.get(sitemap_url, timeout=self.timeout,
+                                        headers={"Accept": "application/xml, text/xml"})
+                if resp.status_code == 200 and "<urlset" in resp.text:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    job_patterns = [
+                        re.compile(r'/job/([^/]+)/(\d+)', re.I),
+                        re.compile(r'/jobs?/(\d+)', re.I),
+                    ]
+                    for loc in soup.find_all("loc"):
+                        loc_url = loc.get_text(strip=True)
+                        for pat in job_patterns:
+                            m = pat.search(loc_url)
+                            if m:
+                                job_id = m.group(m.lastindex)
+                                if job_id in seen_ids:
+                                    break
+                                seen_ids.add(job_id)
+                                # Try to extract title from URL slug
+                                slug_match = re.search(r'/job/([^/]+)/', loc_url)
+                                title = slug_match.group(1).replace('-', ' ').title() if slug_match else f"Job {job_id}"
+                                all_jobs.append({
+                                    "title": title,
+                                    "job_id": job_id,
+                                    "location": "",
+                                    "url": loc_url,
+                                    "department": "",
+                                    "description": "",
+                                })
+                                break
+
+                    if all_jobs:
+                        logger.info(f"  Phenom sitemap: found {len(all_jobs)} jobs")
+                        return all_jobs
+            except Exception:
+                continue
+
+        logger.warning(
+            f"Phenom: could not scrape {company} ({url}). Phenom career sites are JavaScript SPAs. "
+            f"If a Workday/Taleo backend URL is known, add it to PHENOM_WORKDAY_BACKENDS."
+        )
+        return self._scrape_generic(company, url)
+
+    def _fetch_desc_phenom(self, job: Dict) -> str:
+        """Fetch description from a Phenom job detail page.
+        If the job came via a Workday backend, delegate to the Workday fetcher."""
+        workday_url = job.get("_phenom_workday_url", "")
+        if workday_url:
+            return self._fetch_desc_workday(job.get("url", ""), workday_url)
+
+        job_url = job.get("url", "")
+        if not job_url:
+            return ""
+
+        # Inline description from Phenom API
+        desc = job.get("description", "")
+        if desc and len(desc) > 100:
+            return BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)[:5000]
+
+        # Fetch the job page directly
+        resp = self._request(job_url)
+        if not resp:
+            return ""
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Try JSON-LD
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                ld_data = json.loads(script.string or "")
+                if isinstance(ld_data, dict) and ld_data.get("@type") == "JobPosting":
+                    desc = ld_data.get("description", "")
+                    if desc:
+                        return BeautifulSoup(desc, "html.parser").get_text(separator=" ", strip=True)[:5000]
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+        # Try common containers
+        for selector in [
+            {"class": re.compile(r"job.?desc|posting.?desc|description", re.I)},
+            {"class": re.compile(r"content|body|detail", re.I)},
         ]:
             container = soup.find("div", selector)
             if container and len(container.get_text(strip=True)) > 100:

@@ -32,6 +32,7 @@ class Notifier:
         "oraclecloud": ("\u2601\ufe0f", "Oracle HCM Cloud"),
         "jobvite": ("\U0001f4cc", "Jobvite"),
         "icims": ("\U0001f4e1", "iCIMS"),
+        "phenom": ("\U0001f4a0", "Phenom"),
         "tesla": ("\u26a1", "Tesla Careers"),
         "generic": ("\U0001f310", "Other / Generic"),
     }
@@ -48,11 +49,12 @@ class Notifier:
         "oraclecloud": ("#e74c3c", "\u2601\ufe0f Oracle HCM Cloud"),
         "jobvite": ("#1abc9c", "\U0001f4cc Jobvite"),
         "icims": ("#2c3e50", "\U0001f4e1 iCIMS"),
+        "phenom": ("#6c5ce7", "\U0001f4a0 Phenom"),
         "tesla": ("#cc0000", "\u26a1 Tesla Careers"),
         "generic": ("#7f8c8d", "\U0001f310 Other"),
     }
 
-    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "tesla", "generic"]
+    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "phenom", "tesla", "generic"]
 
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
