@@ -34,6 +34,7 @@ class Notifier:
         "icims": ("\U0001f4e1", "iCIMS"),
         "phenom": ("\U0001f4a0", "Phenom"),
         "tesla": ("\u26a1", "Tesla Careers"),
+        "eightfold": ("\U0001f52e", "Eightfold"),
         "generic": ("\U0001f310", "Other / Generic"),
     }
 
@@ -51,27 +52,36 @@ class Notifier:
         "icims": ("#2c3e50", "\U0001f4e1 iCIMS"),
         "phenom": ("#6c5ce7", "\U0001f4a0 Phenom"),
         "tesla": ("#cc0000", "\u26a1 Tesla Careers"),
+        "eightfold": ("#6c5ce7", "\U0001f52e Eightfold"),
         "generic": ("#7f8c8d", "\U0001f310 Other"),
     }
 
-    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "phenom", "tesla", "generic"]
+    PLATFORM_ORDER = ["greenhouse", "lever", "ashby", "workday", "smartrecruiters", "oraclecloud", "amazon", "recruitee", "taleo", "jobvite", "icims", "phenom", "tesla", "eightfold", "generic"]
 
     CATEGORY_ICONS = {
         "Semiconductor": "\U0001f4a1",  # 💡
         "Robotics": "\U0001f916",       # 🤖
+        "Health": "\U0001f3e5",          # 🏥
     }
-    CATEGORY_ORDER = ["Semiconductor", "Robotics"]  # Listed categories first, then others alphabetically
+    CATEGORY_ORDER = ["Semiconductor", "Robotics", "Health"]  # Listed categories first, then others alphabetically
 
     def __init__(self, config: dict):
         notif_cfg = config.get("notification", {})
         self.method = notif_cfg.get("method", "console")
         self.config = notif_cfg
+        # Per-recipient category filtering
+        # Format: [{"email": "a@b.com", "categories": ["Robotics", "Health"]}, ...]
+        self.recipients = notif_cfg.get("recipients", [])
 
     def send(self, new_jobs: List[Dict], stats: Dict) -> bool:
         """Send notification with new job matches."""
         if not new_jobs:
             logger.info("No new jobs to notify about.")
             return True
+
+        # Per-recipient category filtering (email only)
+        if self.method == "email" and self.recipients:
+            return self._send_per_recipient(new_jobs, stats)
 
         if self.method == "email":
             return self._send_email(new_jobs, stats)
@@ -81,6 +91,33 @@ class Notifier:
             return self._send_discord(new_jobs, stats)
         else:
             return self._send_console(new_jobs, stats)
+
+    def _send_per_recipient(self, all_jobs: List[Dict], stats: Dict) -> bool:
+        """Send category-filtered emails to each recipient."""
+        any_sent = False
+        for recipient in self.recipients:
+            email = recipient.get("email", "")
+            categories = recipient.get("categories", [])
+
+            if not email:
+                continue
+
+            # Filter jobs by category (empty categories list = all jobs)
+            if categories:
+                filtered = [j for j in all_jobs if j.get("category", "Other") in categories]
+            else:
+                filtered = all_jobs
+
+            if not filtered:
+                logger.info(f"No matching jobs for {email} (categories: {categories})")
+                continue
+
+            logger.info(f"Sending {len(filtered)} jobs to {email} (categories: {categories})")
+            success = self._send_email(filtered, stats, recipient_override=email)
+            if success:
+                any_sent = True
+
+        return any_sent
 
     def _get_sorted_categories(self, categories):
         """Return categories in defined order: CATEGORY_ORDER first, then others alphabetically."""
@@ -118,7 +155,9 @@ class Notifier:
             print(f"  {cat_icon} {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})")
             print(f"{'='*120}")
 
-            for platform in self.PLATFORM_ORDER:
+            # Include platforms in defined order, then any extras not in the list
+            ordered_platforms = list(self.PLATFORM_ORDER) + [p for p in platforms if p not in self.PLATFORM_ORDER]
+            for platform in ordered_platforms:
                 if platform not in platforms:
                     continue
                 companies = platforms[platform]
@@ -141,7 +180,7 @@ class Notifier:
                         location = (job.get('location') or 'N/A')[:18]
                         score = job.get('relevance_score', 0)
                         visa = WARN if job.get('visa_unverified') else CHECK
-                        link = job.get('url', '')[:45] or DASH
+                        link = (job.get('source_url', job.get('url', '')) if job.get('platform') == 'workday' else job.get('url', ''))[:45] or DASH
                         print(f"      {i:<5} {title:<40} {job_id:<15} {location:<20} {score:<6} {visa:<6} {link}")
 
         print(f"\n{'='*120}")
@@ -154,11 +193,14 @@ class Notifier:
         return True
 
     # ==================== EMAIL ====================
-    def _send_email(self, jobs: List[Dict], stats: Dict) -> bool:
+    def _send_email(self, jobs: List[Dict], stats: Dict, recipient_override: str = "") -> bool:
         email_cfg = self.config.get("email", {})
         try:
-            # Support comma-separated recipient list
-            recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
+            # Use override (per-recipient mode) or fall back to config
+            if recipient_override:
+                recipients = [recipient_override]
+            else:
+                recipients = [r.strip() for r in email_cfg["recipient_email"].split(",") if r.strip()]
 
             msg = MIMEMultipart("alternative")
             msg["Subject"] = f"\U0001f916 {len(jobs)} New Job Match{'es' if len(jobs) > 1 else ''} \u2014 {datetime.now().strftime('%b %d')}"
@@ -183,6 +225,7 @@ class Notifier:
         CATEGORY_COLORS = {
             "Semiconductor": "#e74c3c",
             "Robotics": "#2980b9",
+            "Health": "#27ae60",
         }
 
         # Build 3-level grouping: category -> platform -> company
@@ -206,7 +249,9 @@ class Notifier:
                     {category.upper()} ({cat_total} job{'s' if cat_total != 1 else ''})
                 </div>"""
 
-            for platform in self.PLATFORM_ORDER:
+            # Include platforms in defined order, then any extras not in the list
+            ordered_platforms = list(self.PLATFORM_ORDER) + [p for p in platforms if p not in self.PLATFORM_ORDER]
+            for platform in ordered_platforms:
                 if platform not in platforms:
                     continue
                 companies = platforms[platform]
@@ -227,7 +272,7 @@ class Notifier:
                         score = job.get('relevance_score', 0)
                         score_color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
                         visa_icon = '<span style="color:#e74c3c;" title="Visa status unverified">\u26a0\ufe0f</span>' if job.get('visa_unverified') else '<span style="color:#27ae60;" title="Visa keywords checked">\u2705</span>'
-                        job_url = job.get('url', '')
+                        job_url = job.get('source_url', job.get('url', '')) if job.get('platform') == 'workday' else job.get('url', '')
                         title_cell = f'<a href="{job_url}" style="color:#2c3e50;text-decoration:none;">{job["title"]}</a>' if job_url else job['title']
                         # Show job_id only if it's a short identifier (not a full URL)
                         raw_id = job.get('job_id', '')
@@ -301,7 +346,7 @@ class Notifier:
                 f"*{i}. {self._tg_escape(job['title'])}*\n"
                 f"\U0001f3e2 {self._tg_escape(job['company'])}  \U0001f4cd {self._tg_escape(job.get('location','N/A'))}\n"
                 f"\U0001f4ca Score: {job.get('relevance_score',0)}\n"
-                f"[Apply \u2192]({job.get('url','#')})\n\n"
+                f"[Apply \u2192]({job.get('source_url', job.get('url', '#')) if job.get('platform') == 'workday' else job.get('url', '#')})\n\n"
             )
             if len(current) + len(entry) > 3800:
                 messages.append(current)
@@ -349,7 +394,7 @@ class Notifier:
             color = 0x27ae60 if score >= 20 else 0xf39c12 if score >= 10 else 0x95a5a6
             embeds.append({
                 "title": job["title"],
-                "url": job.get("url", ""),
+                "url": job.get("source_url", job.get("url", "")) if job.get("platform") == "workday" else job.get("url", ""),
                 "color": color,
                 "fields": [
                     {"name": "\U0001f3e2 Company", "value": job["company"], "inline": True},
@@ -482,9 +527,10 @@ class Notifier:
         for j in top[:10]:
             score = j.get('relevance_score', 0)
             color = '#27ae60' if score >= 20 else '#f39c12' if score >= 10 else '#95a5a6'
+            top_job_url = j.get('source_url', j.get('url', '#')) if j.get('platform') == 'workday' else j.get('url', '#')
             top_rows += f"""<tr>
                 <td style='padding:8px 12px;border-bottom:1px solid #eee;'>
-                    <a href="{j.get('url','#')}" style="color:#2c3e50;text-decoration:none;"><strong>{j['title']}</strong></a><br>
+                    <a href="{top_job_url}" style="color:#2c3e50;text-decoration:none;"><strong>{j['title']}</strong></a><br>
                     <span style="color:#7f8c8d;">\U0001f3e2 {j['company']} | \U0001f4cd {j.get('location','N/A')}</span>
                 </td>
                 <td style='padding:8px;text-align:center;border-bottom:1px solid #eee;'>

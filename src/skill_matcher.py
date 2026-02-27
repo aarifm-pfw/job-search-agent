@@ -159,6 +159,30 @@ US_STATE_CODES = {
     "DC", "PR", "GU", "VI",
 }
 
+# State codes that collide with non-US ISO 3166-1 alpha-2 country codes.
+# When one of these is matched, extra validation is applied to avoid
+# false positives (e.g. "Bangalore, IN" = India, NOT Indiana).
+AMBIGUOUS_STATE_CODES = {"IN"}  # IN = Indiana (US) vs India
+
+# Well-known non-US cities — used to disambiguate locations like
+# "Bangalore, IN" (India) vs "Indianapolis, IN" (Indiana).
+NON_US_CITIES = [
+    "bangalore", "bengaluru", "hyderabad", "mumbai", "pune", "chennai",
+    "delhi", "new delhi", "noida", "gurgaon", "gurugram", "kolkata",
+    "ahmedabad", "jaipur", "lucknow", "kochi", "thiruvananthapuram",
+    "coimbatore", "chandigarh", "indore", "nagpur", "visakhapatnam",
+    "mysore", "mysuru", "mangalore", "mangaluru",
+    # Other non-US cities that might appear with ambiguous codes
+    "toronto", "london", "berlin", "tokyo", "sydney", "melbourne",
+    "shanghai", "beijing", "singapore", "dubai", "amsterdam",
+]
+
+# Pattern: "City, CC-City, CC" or "City, CC-Region" — common in job boards
+# for non-US locations (e.g. "Bangalore, IN-Bangalore, IN")
+_NON_US_LOCATION_PATTERN = re.compile(
+    r',\s*[A-Z]{2}\s*-',  # ", XX-" where XX is a 2-letter code followed by hyphen
+)
+
 US_LOCATION_KEYWORDS = [
     "united states", "usa", "u.s.a", "u.s.",
 ]
@@ -199,6 +223,34 @@ US_STATES_FULL = [
 ]
 
 
+def _has_non_us_signals(loc_lower: str) -> bool:
+    """Return True if the location string contains signals that it is NOT a US location."""
+    # Known non-US city names
+    for city in NON_US_CITIES:
+        if city in loc_lower:
+            return True
+    # Non-US country keywords (india, uk, germany, etc.)
+    for country in NON_US_COUNTRY_KEYWORDS:
+        if country in loc_lower:
+            return True
+    # "City, CC-Region" pattern common in job boards for non-US locations
+    if _NON_US_LOCATION_PATTERN.search(loc_lower):
+        return True
+    return False
+
+
+def _is_us_state_code_match(location: str, loc_lower: str) -> bool:
+    """Check 'City, ST' pattern with disambiguation for ambiguous codes."""
+    match = US_LOCATION_PATTERN.search(location)
+    if not match:
+        return False
+    state_code = match.group(1).upper()
+    if state_code in AMBIGUOUS_STATE_CODES:
+        # For ambiguous codes, only accept if there are NO non-US signals
+        return not _has_non_us_signals(loc_lower)
+    return True
+
+
 def is_us_location(location: str) -> bool:
     """Detect if a location string refers to a US location."""
     loc_lower = location.lower().strip()
@@ -216,8 +268,8 @@ def is_us_location(location: str) -> bool:
             if not has_non_us:
                 return True
 
-    # "City, STATE" pattern
-    if US_LOCATION_PATTERN.search(location):
+    # "City, STATE" pattern (with disambiguation for ambiguous codes)
+    if _is_us_state_code_match(location, loc_lower):
         return True
 
     # Full state names
@@ -230,7 +282,7 @@ def is_us_location(location: str) -> bool:
     if re.search(r'[|/;]', location):
         parts = re.split(r'[|/;]', location)
         for part in parts:
-            if US_LOCATION_PATTERN.search(part.strip()):
+            if _is_us_state_code_match(part.strip(), part.strip().lower()):
                 return True
 
     return False

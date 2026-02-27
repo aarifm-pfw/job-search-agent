@@ -248,6 +248,20 @@ notification:
   #   sender_password: "your-app-password"   # Use Gmail App Password
   #   recipient_email: "your-email@gmail.com"
 
+  # --- Per-Recipient Category Filtering (optional) ---
+  # Each recipient receives only jobs from their listed categories.
+  # Empty categories = receive ALL jobs. Category names come from Excel filenames.
+  # For GitHub Actions: set RECIPIENT_CATEGORIES secret as JSON string:
+  #   {"person1@gmail.com": ["Robotics", "Health"], "person2@gmail.com": ["Semiconductor"]}
+  # For local: uncomment below:
+  # recipients:
+  #   - email: "person1@gmail.com"
+  #     categories: ["Robotics", "Health"]
+  #   - email: "person2@gmail.com"
+  #     categories: ["Health", "Semiconductor"]
+  #   - email: "person3@gmail.com"
+  #     categories: []              # empty = ALL categories
+
   # --- Telegram Bot ---
   # method: "telegram"
   # telegram:
@@ -267,6 +281,8 @@ scraping:
   timeout: 30
   # Max retries per company
   max_retries: 2
+  # Parallel workers for scraping (1 = sequential, 4 = scrape 4 companies at once)
+  parallel_workers: 4
   # Fetch full job descriptions for matched jobs (second pass)
   # Improves visa filtering and skill scoring, adds ~15-25 min runtime
   fetch_descriptions: true

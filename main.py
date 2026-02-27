@@ -17,6 +17,8 @@ import glob
 import yaml
 import logging
 import argparse
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 
@@ -67,6 +69,18 @@ def load_config(config_path: str) -> dict:
             "sender_password": os.environ.get("SENDER_PASSWORD", ""),
             "recipient_email": os.environ.get("RECIPIENT_EMAIL", os.environ["SENDER_EMAIL"]),
         }
+        # Per-recipient category filtering (optional)
+        # RECIPIENT_CATEGORIES='{"alice@gmail.com":["Robotics","Health"],"bob@gmail.com":["Semiconductor"]}'
+        if os.environ.get("RECIPIENT_CATEGORIES"):
+            try:
+                import json as _json
+                cat_map = _json.loads(os.environ["RECIPIENT_CATEGORIES"])
+                config["notification"]["recipients"] = [
+                    {"email": email, "categories": cats}
+                    for email, cats in cat_map.items()
+                ]
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Invalid RECIPIENT_CATEGORIES JSON: {e}")
     elif os.environ.get("TELEGRAM_BOT_TOKEN"):
         config.setdefault("notification", {})
         config["notification"]["method"] = "telegram"
@@ -97,6 +111,75 @@ def find_excel_files(data_dir: str = None) -> list:
     return sorted(files)
 
 
+def _scrape_sequential(scraper, companies):
+    """Scrape companies one at a time (original behavior)."""
+    _logger = logging.getLogger("agent")
+    all_jobs = []
+    errors = 0
+    total = len(companies)
+    for i, company in enumerate(companies, 1):
+        name = company["name"]
+        url = company["career_url"]
+        category = company.get("category", "Other")
+        try:
+            jobs = scraper.scrape_company(name, url)
+            for job in jobs:
+                job["category"] = category
+            _logger.info(f"[{i}/{total}] {name} — {len(jobs)} job(s)")
+            all_jobs.extend(jobs)
+        except Exception as e:
+            _logger.error(f"[{i}/{total}] {name} — ERROR: {e}")
+            errors += 1
+    return all_jobs, errors
+
+
+def _scrape_parallel(config, companies, max_workers):
+    """Scrape companies in parallel — one thread per company, each with its own session."""
+    _logger = logging.getLogger("agent")
+    all_jobs = []
+    errors = 0
+    total = len(companies)
+    completed = 0
+    lock = threading.Lock()
+
+    # Each thread gets its own JobScraper instance (separate requests.Session)
+    _thread_local = threading.local()
+
+    def get_scraper():
+        if not hasattr(_thread_local, "scraper"):
+            _thread_local.scraper = JobScraper(config)
+        return _thread_local.scraper
+
+    def scrape_one(company):
+        name = company["name"]
+        url = company["career_url"]
+        category = company.get("category", "Other")
+        scraper = get_scraper()
+        jobs = scraper.scrape_company(name, url)
+        for job in jobs:
+            job["category"] = category
+        return name, jobs
+
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(scrape_one, c): c for c in companies}
+        for future in as_completed(futures):
+            company = futures[future]
+            name = company["name"]
+            with lock:
+                completed += 1
+            try:
+                _, jobs = future.result()
+                with lock:
+                    all_jobs.extend(jobs)
+                _logger.info(f"[{completed}/{total}] {name} — {len(jobs)} job(s)")
+            except Exception as e:
+                with lock:
+                    errors += 1
+                _logger.error(f"[{completed}/{total}] {name} — ERROR: {e}")
+
+    return all_jobs, errors
+
+
 def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
     """Main agent execution."""
     logger = logging.getLogger("agent")
@@ -119,29 +202,21 @@ def run_agent(config: dict, excel_files: list = None, dry_run: bool = False):
     logger.info(f"✅ Loaded {len(companies)} unique companies")
 
     # ---- 2. INITIALIZE COMPONENTS ----
-    scraper = JobScraper(config)
     matcher = SkillMatcher(config)
     db = JobDatabase()
     notifier = Notifier(config)
 
     # ---- 3. SCRAPE ALL COMPANIES ----
-    all_jobs = []
-    errors = 0
+    parallel_workers = config.get("scraping", {}).get("parallel_workers", 1)
     total = len(companies)
-    for i, company in enumerate(companies, 1):
-        name = company["name"]
-        url = company["career_url"]
-        category = company.get("category", "Other")
-        try:
-            jobs = scraper.scrape_company(name, url)
-            # Propagate category to each job
-            for job in jobs:
-                job["category"] = category
-            logger.info(f"[{i}/{total}] {name} — {len(jobs)} job(s)")
-            all_jobs.extend(jobs)
-        except Exception as e:
-            logger.error(f"[{i}/{total}] {name} — ERROR: {e}")
-            errors += 1
+
+    if parallel_workers > 1:
+        logger.info(f"⚡ Parallel scraping with {parallel_workers} workers")
+        all_jobs, errors = _scrape_parallel(config, companies, parallel_workers)
+        scraper = JobScraper(config)  # for description fetching later
+    else:
+        scraper = JobScraper(config)
+        all_jobs, errors = _scrape_sequential(scraper, companies)
 
     logger.info(f"\nScraping complete: {len(all_jobs)} total jobs from {total} companies ({errors} errors)")
 
