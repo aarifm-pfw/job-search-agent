@@ -48,10 +48,11 @@ def detect_platform(url: str) -> str:
           or "createnewalert" in url_lower
           or "optionsfacetsdd_" in url_lower):
         return "icims"
-    # Phenom People career sites: /search-results, /job-search-results, /search-jobs
+    # Phenom People career sites: /search-results, /job-search-results, /search-jobs, /search/jobs
     elif (re.search(r'/(?:global|us|en|uk|in)/(?:en|de|fr|es)/search-results', url_lower)
           or "/job-search-results" in url_lower
-          or re.search(r'/en/search-jobs', url_lower)):
+          or re.search(r'/en/search-jobs', url_lower)
+          or re.search(r'/search/jobs\b', url_lower)):
         return "phenom"
     # Tesla custom career site
     elif "tesla.com/careers" in url_lower:
@@ -570,6 +571,9 @@ class JobScraper:
         if not slug:
             return self._scrape_generic(company, url)
 
+        # Lever has separate API domains for global vs EU-hosted boards
+        api_host = "api.eu.lever.co" if "eu.lever.co" in url.lower() else "api.lever.co"
+
         # Lever API returns all postings at once (no built-in pagination needed),
         # but uses cursor-based pagination via 'skip' for very large boards
         page_size = 100
@@ -579,7 +583,7 @@ class JobScraper:
         try:
             for page in range(max_pages):
                 skip = page * page_size
-                api_url = f"https://api.lever.co/v0/postings/{slug}?mode=json&limit={page_size}&skip={skip}"
+                api_url = f"https://{api_host}/v0/postings/{slug}?mode=json&limit={page_size}&skip={skip}"
                 resp = self._request(api_url, accept_json=True)
                 if not resp:
                     break
@@ -1222,11 +1226,13 @@ class JobScraper:
 
                 time.sleep(1)
 
-        # Strategy 3: Try paginated search (/search/jobs/page/N)
+        # Strategy 3: Try paginated search (append /page/N to the URL path)
         if not all_jobs:
+            # Use the original URL (with company slug) as the pagination base
+            pagination_base = url.rstrip('/')
             max_pages = 20
             for page in range(1, max_pages + 1):
-                page_url = f"{base_url}/search/jobs/page/{page}"
+                page_url = f"{pagination_base}/page/{page}"
                 resp = self._request(page_url)
                 if not resp or resp.status_code != 200:
                     break
@@ -1307,6 +1313,13 @@ class JobScraper:
         return self._fetch_desc_generic(job_url)
 
     # ========== iCIMS ==========
+    # Known iCIMS portal URLs for companies with custom career domains.
+    # When the custom domain (JS SPA) doesn't yield data, we fall back to the
+    # standard careers-{slug}.icims.com portal which may serve HTML/JSON-LD.
+    ICIMS_PORTALS = {
+        "careers.pdf.com": "https://careers-pdf.icims.com/jobs/search",
+    }
+
     def _scrape_icims(self, company: str, url: str) -> List[Dict]:
         """Scrape jobs from iCIMS career sites (including custom domains).
         iCIMS sites are JS SPAs, so we try multiple strategies:
@@ -1568,6 +1581,93 @@ class JobScraper:
             except Exception:
                 continue
 
+        # Strategy 4: Try known iCIMS portal URLs (careers-{slug}.icims.com)
+        # Many companies with custom domains also have standard iCIMS portals
+        icims_portal = self.ICIMS_PORTALS.get(parsed.netloc.lower())
+        if icims_portal:
+            logger.info(f"  iCIMS → trying portal fallback: {icims_portal}")
+            portal_resp = self._request(icims_portal)
+            if portal_resp:
+                portal_soup = BeautifulSoup(portal_resp.text, "html.parser")
+
+                # Check for JSON-LD on the portal
+                for script in portal_soup.find_all("script", type="application/ld+json"):
+                    try:
+                        ld_data = json.loads(script.string or "")
+                        items = []
+                        if isinstance(ld_data, list):
+                            items = ld_data
+                        elif isinstance(ld_data, dict):
+                            if ld_data.get("@type") == "JobPosting":
+                                items = [ld_data]
+                            elif "itemListElement" in ld_data:
+                                items = [i.get("item", i) for i in ld_data["itemListElement"]]
+                        for item in items:
+                            if item.get("@type") != "JobPosting":
+                                continue
+                            title = item.get("title", "")
+                            job_url = item.get("url", "")
+                            jid = item.get("identifier", {})
+                            if isinstance(jid, dict):
+                                job_id = str(jid.get("value", job_url))
+                            else:
+                                job_id = str(jid) if jid else job_url
+                            if job_id in seen_ids:
+                                continue
+                            seen_ids.add(job_id)
+                            loc = item.get("jobLocation", {})
+                            if isinstance(loc, dict):
+                                addr = loc.get("address", {})
+                                location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                            elif isinstance(loc, list) and loc:
+                                addr = loc[0].get("address", {})
+                                location = f"{addr.get('addressLocality', '')}, {addr.get('addressRegion', '')}".strip(", ")
+                            else:
+                                location = ""
+                            all_jobs.append({
+                                "title": title,
+                                "job_id": job_id,
+                                "location": location,
+                                "url": job_url or icims_portal,
+                                "department": item.get("occupationalCategory", ""),
+                                "description": "",
+                            })
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
+                if all_jobs:
+                    logger.info(f"  iCIMS portal JSON-LD: found {len(all_jobs)} jobs")
+                    return all_jobs
+
+                # Parse job links on the portal page
+                portal_base = f"{urlparse(icims_portal).scheme}://{urlparse(icims_portal).netloc}"
+                for link in portal_soup.find_all("a", href=True):
+                    href = link.get("href", "")
+                    text = link.get_text(strip=True)
+                    if not text or len(text) < 5 or len(text) > 200:
+                        continue
+                    for pat in job_link_patterns:
+                        id_match = pat.search(href)
+                        if id_match:
+                            job_id = id_match.group(1)
+                            if job_id in seen_ids:
+                                break
+                            seen_ids.add(job_id)
+                            full_url = urljoin(portal_base, href)
+                            all_jobs.append({
+                                "title": text,
+                                "job_id": job_id,
+                                "location": "",
+                                "url": full_url,
+                                "department": "",
+                                "description": "",
+                            })
+                            break
+
+                if all_jobs:
+                    logger.info(f"  iCIMS portal HTML: found {len(all_jobs)} jobs")
+                    return all_jobs
+
         logger.warning(f"iCIMS: all strategies exhausted for {company} ({url})")
         return self._scrape_generic(company, url)
 
@@ -1639,10 +1739,15 @@ class JobScraper:
         "jobs.bd.com": "https://bdx.wd1.myworkdayjobs.com/EXTERNAL_CAREER_SITE_USA",
     }
 
+    # Jobvite backend URLs for Phenom-fronted companies that use Jobvite as ATS.
+    PHENOM_JOBVITE_BACKENDS = {
+        "careers.amperecomputing.com": "https://jobs.jobvite.com/amperecomputing",
+    }
+
     def _scrape_phenom(self, company: str, url: str) -> List[Dict]:
         """Scrape jobs from Phenom People career sites.
         Phenom is a JS SPA that wraps an underlying ATS (usually Workday or Taleo).
-        Strategy: try known Workday backend → Phenom API patterns → HTML/sitemap."""
+        Strategy: try known Workday/Jobvite backend → Phenom API patterns → HTML/sitemap."""
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
         hostname = parsed.hostname or ""
@@ -1650,7 +1755,15 @@ class JobScraper:
         all_jobs = []
         seen_ids = set()
 
-        # Strategy 1: Use known Workday backend URL if available
+        # Strategy 1a: Use known Jobvite backend URL if available
+        jobvite_url = self.PHENOM_JOBVITE_BACKENDS.get(hostname)
+        if jobvite_url:
+            logger.info(f"  Phenom → using Jobvite backend for {company}")
+            jobs = self._scrape_jobvite(company, jobvite_url)
+            if jobs:
+                return jobs
+
+        # Strategy 1b: Use known Workday backend URL if available
         workday_url = self.PHENOM_WORKDAY_BACKENDS.get(hostname)
         if workday_url:
             logger.info(f"  Phenom → using Workday backend for {company}")
