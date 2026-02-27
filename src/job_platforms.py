@@ -39,6 +39,8 @@ def detect_platform(url: str) -> str:
         return "recruitee"
     elif "/go/" in url_lower and re.search(r'/go/[\w-]+/\d+', url_lower):
         return "taleo"
+    elif ".taleo.net" in url_lower or "/careersection/" in url_lower:
+        return "taleo"
     elif ".oraclecloud.com" in url_lower or "candidateexperience" in url_lower:
         return "oraclecloud"
     # iCIMS / Taleo Enterprise custom domains:
@@ -852,9 +854,15 @@ class JobScraper:
 
     # ========== TALEO ==========
     def _scrape_taleo(self, company: str, url: str) -> List[Dict]:
-        """Scrape jobs from a Taleo career board with pagination."""
-        # Extract the base search path (e.g., /go/Search/8797500)
+        """Scrape jobs from a Taleo career board with pagination.
+        Supports both classic Taleo (/go/) and Taleo Enterprise (/careersection/)."""
         parsed = urlparse(url)
+
+        # Taleo Enterprise: /careersection/{id}/joblist.ftl
+        if "/careersection/" in url or ".taleo.net" in url:
+            return self._scrape_taleo_enterprise(company, url)
+
+        # Classic Taleo: /go/Search/{id}
         base_match = re.search(r'(/go/[\w-]+/\d+)', parsed.path)
         if not base_match:
             return self._scrape_generic(company, url)
@@ -933,6 +941,134 @@ class JobScraper:
             logger.info(f"  Taleo: fetched {len(all_jobs)} total jobs across {page+1} page(s)")
             return all_jobs
 
+        return self._scrape_generic(company, url)
+
+    def _scrape_taleo_enterprise(self, company: str, url: str) -> List[Dict]:
+        """Scrape jobs from Taleo Enterprise (/careersection/) career sites.
+        These use server-rendered HTML with a table of job listings and
+        pagination via startrow parameter."""
+        parsed = urlparse(url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+        # Extract careersection ID from URL (e.g., "10030" from /careersection/10030/)
+        cs_match = re.search(r'/careersection/(\w+)/', url)
+        cs_id = cs_match.group(1) if cs_match else ""
+
+        all_jobs = []
+        seen_ids = set()
+        page_size = 25
+        max_pages = 40  # Safety cap
+
+        for page in range(max_pages):
+            start_row = page * page_size
+            if start_row == 0:
+                page_url = url
+            else:
+                # Taleo Enterprise uses startrow parameter for pagination
+                page_url = re.sub(r'[?&]startrow=\d+', '', url)
+                separator = '&' if '?' in page_url else '?'
+                page_url = f"{page_url}{separator}startrow={start_row}"
+
+            resp = self._request(page_url)
+            if not resp:
+                break
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # Taleo Enterprise uses table with id 'jobs' or class 'searchResults'
+            table = (soup.find("table", id="searchresults")
+                     or soup.find("table", id=re.compile(r"jobs?", re.I))
+                     or soup.find("table", class_=re.compile(r"search.?results|job.?list", re.I)))
+
+            page_jobs = []
+
+            if table:
+                rows = table.find_all("tr")
+                for row in rows:
+                    # Find job links — Taleo Enterprise uses /jobdetail.ftl?job=ID
+                    link = row.find("a", href=lambda h: h and (
+                        "jobdetail" in h.lower() or "/job/" in h.lower()
+                    ))
+                    if not link:
+                        continue
+
+                    title = link.get_text(strip=True)
+                    if not title or len(title) < 3:
+                        continue
+
+                    href = link.get("href", "")
+                    job_url_full = urljoin(base_url, href)
+
+                    # Extract job ID from URL
+                    jid_match = re.search(r'job=(\d+)', href) or re.search(r'/(\d{5,})/?', href)
+                    job_id = jid_match.group(1) if jid_match else job_url_full
+
+                    if job_id in seen_ids:
+                        continue
+                    seen_ids.add(job_id)
+
+                    # Try to extract location from other table cells
+                    tds = row.find_all("td")
+                    location = ""
+                    for td in tds[1:]:
+                        text = td.get_text(strip=True)
+                        if text and text != title and len(text) < 100:
+                            location = text
+                            break
+
+                    page_jobs.append({
+                        "title": title,
+                        "job_id": job_id,
+                        "location": location,
+                        "url": job_url_full,
+                        "department": "",
+                        "description": "",
+                    })
+
+            # Also try to find job links outside tables (some Taleo Enterprise sites
+            # use divs instead of tables)
+            if not page_jobs:
+                for link in soup.find_all("a", href=True):
+                    href = link.get("href", "")
+                    if "jobdetail" not in href.lower() and "/job/" not in href.lower():
+                        continue
+                    title = link.get_text(strip=True)
+                    if not title or len(title) < 5 or len(title) > 200:
+                        continue
+
+                    job_url_full = urljoin(base_url, href)
+                    jid_match = re.search(r'job=(\d+)', href) or re.search(r'/(\d{5,})/?', href)
+                    job_id = jid_match.group(1) if jid_match else job_url_full
+
+                    if job_id in seen_ids:
+                        continue
+                    seen_ids.add(job_id)
+
+                    page_jobs.append({
+                        "title": title,
+                        "job_id": job_id,
+                        "location": "",
+                        "url": job_url_full,
+                        "department": "",
+                        "description": "",
+                    })
+
+            if not page_jobs:
+                break
+
+            all_jobs.extend(page_jobs)
+            logger.debug(f"  Taleo Enterprise page {page+1}: {len(page_jobs)} jobs, {len(all_jobs)} total")
+
+            if len(page_jobs) < page_size:
+                break
+
+            time.sleep(self.delay)
+
+        if all_jobs:
+            logger.info(f"  Taleo Enterprise: fetched {len(all_jobs)} total jobs across {page+1} page(s)")
+            return all_jobs
+
+        # Fallback: try JSON-LD or generic scraping
         return self._scrape_generic(company, url)
 
     def _fetch_desc_taleo(self, job_url: str) -> str:
