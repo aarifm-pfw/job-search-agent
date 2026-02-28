@@ -16,6 +16,7 @@ skills:
     - "systems engineer"         
     - "product engineer"         
     - "full stack developer"
+    - "backend engineer"
 
   role_synonyms:
     - ["systems engineer", "systems software engineer", "embedded systems engineer",
@@ -24,7 +25,7 @@ skills:
        "technical product engineer", "applications engineer"]
     - ["full stack developer", "full-stack developer", "fullstack developer",
        "full stack engineer", "full-stack engineer", "fullstack engineer",
-       "web developer", "frontend developer"]
+       "web developer", "frontend developer", "backend developer"]
 
   # Technical skills (secondary - boost relevance score)
   technical:
@@ -148,6 +149,7 @@ skills:
     - "vice president"
     - "head of"
     - "chief"
+    - "lead"
     - "15+ years"
     - "12+ years"
     - "10+ years"
