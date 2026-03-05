@@ -1873,6 +1873,9 @@ class JobScraper:
         "careers.humana.com": "https://humana.wd5.myworkdayjobs.com/Humana_External_Career_Site",
         "careers.siemens-healthineers.com": "https://onehealthineers.wd3.myworkdayjobs.com/SHSJB",
         "jobs.bd.com": "https://bdx.wd1.myworkdayjobs.com/EXTERNAL_CAREER_SITE_USA",
+        "jobs.thecignagroup.com": "https://cigna.wd5.myworkdayjobs.com/cignacareers",
+        "www.jobs.abbott": "https://abbott.wd5.myworkdayjobs.com/abbottcareers",
+        "www.pgcareers.com": "https://pg.wd5.myworkdayjobs.com/1000",
     }
 
     # Jobvite backend URLs for Phenom-fronted companies that use Jobvite as ATS.
@@ -2504,7 +2507,7 @@ class JobScraper:
         """Scrape jobs from an Eightfold.ai career site.
 
         Uses the public GET /api/apply/v2/jobs endpoint that powers the
-        career page SPA.  No authentication required.
+        career page SPA.  Some sites require a session cookie first.
 
         Pagination params:
           num   – page size (max ~100)
@@ -2526,16 +2529,35 @@ class JobScraper:
             "Accept": "application/json",
             "User-Agent": self.session.headers.get("User-Agent", "Mozilla/5.0"),
             "Referer": url,
+            "Origin": base_url,
         }
 
         try:
-            # First page
+            # First page attempt
             resp = self.session.get(
                 api_url,
                 params={"num": page_size, "start": 0},
                 timeout=self.timeout,
                 headers=headers,
             )
+
+            # If 403, visit the career page first to establish session cookies,
+            # then retry the API call
+            if resp.status_code == 403:
+                logger.info(f"  Eightfold API returned 403, establishing session via career page...")
+                self.session.get(url, timeout=self.timeout, headers={
+                    "User-Agent": self.session.headers.get("User-Agent", "Mozilla/5.0"),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                })
+                time.sleep(1)
+
+                # Retry with session cookies now set
+                resp = self.session.get(
+                    api_url,
+                    params={"num": page_size, "start": 0},
+                    timeout=self.timeout,
+                    headers=headers,
+                )
 
             if resp.status_code != 200:
                 logger.warning(f"  Eightfold API returned {resp.status_code} for {api_url}")
