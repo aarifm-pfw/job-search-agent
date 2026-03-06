@@ -1908,9 +1908,11 @@ class JobScraper:
             logger.info(f"  Phenom → using Workday backend for {company}")
             jobs = self._scrape_workday(company, workday_url)
             if jobs:
-                # Tag with Workday backend info for description fetching
+                # Workday externalPath URLs often 404 when accessed directly.
+                # Replace with the Phenom career page URL or the base Workday URL.
                 for j in jobs:
                     j["_phenom_workday_url"] = workday_url
+                    j["url"] = url or workday_url
                 return jobs
 
         # Strategy 2: Try common Phenom internal API endpoint patterns

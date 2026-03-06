@@ -425,13 +425,17 @@ class TestPhenomScraper(unittest.TestCase):
     @patch.object(JobScraper, '_scrape_workday')
     def test_phenom_routes_to_workday(self, mock_workday):
         mock_workday.return_value = [{"title": "WD Job", "job_id": "1", "location": "X",
-                                       "url": "https://x.com/1", "department": "Eng", "description": ""}]
-        jobs = self.scraper._scrape_phenom("Humana", "https://careers.humana.com/us/en/search-results")
+                                       "url": "https://humana.wd5.myworkdayjobs.com/en-US/Humana/job/Remote/WD-Job_R-123",
+                                       "department": "Eng", "description": ""}]
+        phenom_url = "https://careers.humana.com/us/en/search-results"
+        jobs = self.scraper._scrape_phenom("Humana", phenom_url)
         mock_workday.assert_called_once()
         self.assertEqual(len(jobs), 1)
         self.assertEqual(jobs[0]["title"], "WD Job")
         # Should be tagged with Workday URL
         self.assertIn("_phenom_workday_url", jobs[0])
+        # Job URL should point to the Phenom career page, NOT the Workday externalPath
+        self.assertEqual(jobs[0]["url"], phenom_url)
 
     @patch.object(JobScraper, '_scrape_jobvite')
     def test_phenom_routes_to_jobvite(self, mock_jobvite):
