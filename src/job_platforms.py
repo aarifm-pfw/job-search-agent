@@ -1908,11 +1908,17 @@ class JobScraper:
             logger.info(f"  Phenom → using Workday backend for {company}")
             jobs = self._scrape_workday(company, workday_url)
             if jobs:
-                # Workday externalPath URLs often 404 when accessed directly.
-                # Replace with the Phenom career page URL or the base Workday URL.
+                # Build Phenom job-detail URLs: {base_url}/{locale}/job/{job_id}
+                # Extract locale from the career page path (e.g. /us/en/search-results → us/en)
+                locale_match = re.match(r'/([a-z]{2,6}(?:/[a-z]{2})?)/(?:search|job)', parsed.path, re.I)
+                locale = locale_match.group(1) if locale_match else "us/en"
                 for j in jobs:
                     j["_phenom_workday_url"] = workday_url
-                    j["url"] = url or workday_url
+                    job_id = j.get("job_id", "")
+                    if job_id:
+                        j["url"] = f"{base_url}/{locale}/job/{job_id}"
+                    else:
+                        j["url"] = url
                 return jobs
 
         # Strategy 2: Try common Phenom internal API endpoint patterns

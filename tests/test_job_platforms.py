@@ -424,7 +424,7 @@ class TestPhenomScraper(unittest.TestCase):
 
     @patch.object(JobScraper, '_scrape_workday')
     def test_phenom_routes_to_workday(self, mock_workday):
-        mock_workday.return_value = [{"title": "WD Job", "job_id": "1", "location": "X",
+        mock_workday.return_value = [{"title": "WD Job", "job_id": "31142817", "location": "X",
                                        "url": "https://humana.wd5.myworkdayjobs.com/en-US/Humana/job/Remote/WD-Job_R-123",
                                        "department": "Eng", "description": ""}]
         phenom_url = "https://careers.humana.com/us/en/search-results"
@@ -434,8 +434,28 @@ class TestPhenomScraper(unittest.TestCase):
         self.assertEqual(jobs[0]["title"], "WD Job")
         # Should be tagged with Workday URL
         self.assertIn("_phenom_workday_url", jobs[0])
-        # Job URL should point to the Phenom career page, NOT the Workday externalPath
+        # Job URL should be a direct Phenom job-detail link, NOT the Workday externalPath
+        self.assertEqual(jobs[0]["url"], "https://careers.humana.com/us/en/job/31142817")
+
+    @patch.object(JobScraper, '_scrape_workday')
+    def test_phenom_workday_job_url_no_job_id(self, mock_workday):
+        """When job_id is missing, fall back to the Phenom career page URL."""
+        mock_workday.return_value = [{"title": "WD Job", "job_id": "", "location": "Y",
+                                       "url": "https://humana.wd5.myworkdayjobs.com/some/path",
+                                       "department": "", "description": ""}]
+        phenom_url = "https://careers.humana.com/us/en/search-results"
+        jobs = self.scraper._scrape_phenom("Humana", phenom_url)
         self.assertEqual(jobs[0]["url"], phenom_url)
+
+    @patch.object(JobScraper, '_scrape_workday')
+    def test_phenom_workday_job_url_global_locale(self, mock_workday):
+        """Phenom sites with /global/en/ locale should use that in job URLs."""
+        mock_workday.return_value = [{"title": "Eng", "job_id": "99999", "location": "Z",
+                                       "url": "https://x.wd3.myworkdayjobs.com/path",
+                                       "department": "", "description": ""}]
+        phenom_url = "https://careers.siemens-healthineers.com/global/en/search-results?from=20"
+        jobs = self.scraper._scrape_phenom("Siemens", phenom_url)
+        self.assertEqual(jobs[0]["url"], "https://careers.siemens-healthineers.com/global/en/job/99999")
 
     @patch.object(JobScraper, '_scrape_jobvite')
     def test_phenom_routes_to_jobvite(self, mock_jobvite):
